@@ -42,6 +42,10 @@ DEFAULT_LISTING_SEEDS = (
 SOURCE_HOST = "www.tecbite.com"
 DEFAULT_FRESHNESS_MINUTES = 30
 DEFAULT_CURRENCY = "USD"
+MAX_SNAPSHOT_AGE_HOURS = 24
+MIN_COMPLETENESS_PERCENT = 85.0
+SKU_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9\-_]{1,63}$")
+REQUIRED_DB_ENV = ("DB_USER", "DB_PASS", "DB_HOST", "DB_PORT", "DB_NAME")
 
 LISTING_CARD_SELECTORS = (
     "article.product-card",
@@ -93,6 +97,29 @@ ATTRIBUTE_SELECTORS = (
 JSON_LD_SELECTOR = "script[type='application/ld+json']"
 
 
+def build_log_payload(
+    event: str,
+    *,
+    stage: str,
+    message: str,
+    snapshot_version: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    error_code: Optional[str] = None,
+    extra: Optional[Dict[str, object]] = None,
+) -> str:
+    payload: Dict[str, object] = {
+        "event": event,
+        "stage": stage,
+        "conversation_id": conversation_id,
+        "snapshot_version": snapshot_version,
+        "error_code": error_code,
+        "message": message,
+    }
+    if extra:
+        payload.update(extra)
+    return json.dumps(payload, ensure_ascii=True)
+
+
 @dataclass
 class ProductRecord:
     product_sku: str
@@ -114,11 +141,18 @@ class ProductRecord:
 
 
 def build_database_uri() -> str:
-    db_user = os.getenv("DB_USER", "postgres")
-    db_pass = os.getenv("DB_PASS", "Tecbite20$")
-    db_host = os.getenv("DB_HOST", "n8n.yavingos.com")
-    db_port = os.getenv("DB_PORT", "5433")
-    db_name = os.getenv("DB_NAME", "n8ntecbite_db")
+    missing = [name for name in REQUIRED_DB_ENV if not os.getenv(name)]
+    if missing:
+        raise EnvironmentError(
+            "Missing DB environment variables: "
+            + ", ".join(missing)
+            + ". Configure them before running the catalog ETL."
+        )
+    db_user = os.getenv("DB_USER")
+    db_pass = os.getenv("DB_PASS")
+    db_host = os.getenv("DB_HOST")
+    db_port = os.getenv("DB_PORT")
+    db_name = os.getenv("DB_NAME")
     return f"postgresql+psycopg2://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
 
 
@@ -446,7 +480,107 @@ class TecbiteCatalogIngestor:
         self.logger.info("Collected %s unique product states", len(final_records))
         return final_records
 
+    def validate_records(self, records: List[ProductRecord]) -> Dict[str, object]:
+        invalid_skus = [record.product_sku for record in records if not SKU_PATTERN.match(record.product_sku)]
+        missing_price = [record.product_sku for record in records if record.price_amount is None]
+        total = len(records)
+        complete = len([record for record in records if record.title and record.stock_status and record.price_amount is not None])
+        completeness_percent = (complete / total * 100.0) if total else 0.0
+
+        issues: List[Dict[str, object]] = []
+        if invalid_skus:
+            issues.append(
+                {
+                    "severity": "critical",
+                    "code": "INVALID_SKU_FORMAT",
+                    "message": "Malformed SKUs detected in crawled records.",
+                    "count": len(invalid_skus),
+                    "sample": invalid_skus[:10],
+                }
+            )
+        if completeness_percent < MIN_COMPLETENESS_PERCENT:
+            issues.append(
+                {
+                    "severity": "critical",
+                    "code": "LOW_COMPLETENESS",
+                    "message": "Catalog record completeness is below threshold.",
+                    "threshold_percent": MIN_COMPLETENESS_PERCENT,
+                    "value_percent": round(completeness_percent, 2),
+                }
+            )
+        if missing_price:
+            issues.append(
+                {
+                    "severity": "warning",
+                    "code": "MISSING_PRICE",
+                    "message": "Some SKUs have no parsed price.",
+                    "count": len(missing_price),
+                    "sample": missing_price[:10],
+                }
+            )
+        return {
+            "total_records": total,
+            "complete_records": complete,
+            "completeness_percent": round(completeness_percent, 2),
+            "issues": issues,
+        }
+
+    def check_snapshot_freshness(self, conn) -> None:
+        result = conn.execute(
+            text(
+                """
+                SELECT snapshot_id, snapshot_at
+                FROM tecbite_catalog_snapshot
+                WHERE status IN ('success', 'partial')
+                ORDER BY snapshot_at DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+        if not result:
+            self.logger.warning(
+                build_log_payload(
+                    "catalog_snapshot_missing_prior",
+                    stage="catalog_etl",
+                    message="No previous valid snapshot found; first successful run will seed freshness baseline.",
+                )
+            )
+            return
+        age_hours = (self.now - result["snapshot_at"]).total_seconds() / 3600.0
+        if age_hours > MAX_SNAPSHOT_AGE_HOURS:
+            self.logger.error(
+                build_log_payload(
+                    "catalog_snapshot_stale",
+                    stage="catalog_etl",
+                    message="Catalog snapshot age exceeded threshold.",
+                    snapshot_version=str(result["snapshot_id"]),
+                    error_code="CATALOG_SNAPSHOT_STALE",
+                    extra={
+                        "age_hours": round(age_hours, 2),
+                        "threshold_hours": MAX_SNAPSHOT_AGE_HOURS,
+                    },
+                )
+            )
+
     def persist(self, records: List[ProductRecord]) -> None:
+        quality_report = self.validate_records(records)
+        self.logger.info(
+            build_log_payload(
+                "catalog_quality_report",
+                stage="catalog_etl",
+                message="Catalog quality report generated.",
+                extra=quality_report,
+            )
+        )
+        critical_issues = [
+            issue for issue in quality_report["issues"] if isinstance(issue, dict) and issue.get("severity") == "critical"
+        ]
+        if critical_issues:
+            raise ValueError(
+                "Catalog load blocked by critical validations: "
+                + json.dumps(critical_issues, ensure_ascii=True)
+            )
+
         snapshot_id = str(uuid.uuid4())
         crawl_started_at = self.now
         crawl_finished_at = datetime.now(timezone.utc)
@@ -459,11 +593,17 @@ class TecbiteCatalogIngestor:
         status = "dry_run" if self.args.dry_run else ("partial" if not records else "success")
 
         self.logger.info(
-            "Snapshot %s status=%s records=%s dry_run=%s",
-            snapshot_id,
-            status,
-            len(records),
-            self.args.dry_run,
+            build_log_payload(
+                "catalog_snapshot_status",
+                stage="catalog_etl",
+                message="Snapshot persistence prepared.",
+                snapshot_version=snapshot_id,
+                extra={
+                    "status": status,
+                    "records": len(records),
+                    "dry_run": self.args.dry_run,
+                },
+            )
         )
         if self.args.dry_run:
             return
@@ -476,6 +616,7 @@ class TecbiteCatalogIngestor:
         engine = create_engine(build_database_uri())
         try:
             with engine.begin() as conn:
+                self.check_snapshot_freshness(conn)
                 conn.execute(
                     text(
                         """
@@ -613,7 +754,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
 def configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s event=catalog_etl - %(message)s",
     )
 
 

@@ -1,0 +1,52 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python ETL scripts + n8n JSON workflows + PostgreSQL (pgvector)
+  Runtime: CLI scripts with argparse, requests/BeautifulSoup, SQLAlchemy + SQL migrations
+  Architecture: SQL-first data backbone (fitment/catalog/state) with RAG support
+  Testing: No project test runner detected yet
+  Style: No linter/formatter/type-checker config detected in repo
+
+strict_tdd: false
+
+testing:
+  detected_at: "2026-04-22"
+  strict_tdd_mode: disabled
+  test_runner:
+    available: false
+    framework: null
+    command: null
+  layers:
+    unit: { available: false, tool: null }
+    integration: { available: false, tool: null }
+    e2e: { available: false, tool: null }
+  coverage:
+    available: false
+    command: null
+  quality_tools:
+    linter: { available: false, command: null }
+    type_checker: { available: false, command: null }
+    formatter: { available: false, command: null }
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Identify affected modules/packages
+  specs:
+    - Use Given/When/Then format for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group tasks by phase (infrastructure, implementation, testing)
+    - Use hierarchical numbering (1.1, 1.2, etc.)
+    - Keep tasks small enough to complete in one session
+  apply:
+    - Follow existing code patterns and conventions
+    - Load relevant coding skills for the project stack
+  verify:
+    - Run tests if test infrastructure exists
+    - Compare implementation against every spec scenario
+  archive:
+    - Warn before merging destructive deltas (large removals)

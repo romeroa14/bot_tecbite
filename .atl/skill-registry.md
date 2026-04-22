@@ -19,49 +19,49 @@ See `_shared/skill-resolver.md` for the full resolution protocol.
 Pre-digested rules per skill. Delegators copy matching blocks into sub-agent prompts as `## Project Standards (auto-resolved)`.
 
 ### issue-creation
-- Always use issue templates; blank issues are not valid.
-- Create issues only for bugs/features; route questions to Discussions.
-- Search duplicates before opening a new issue.
-- New issues must start with `status:needs-review`.
-- A maintainer must add `status:approved` before PR work starts.
-- Include reproducible steps and expected vs actual behavior for bugs.
-- Include problem + proposed solution for features.
+- Always use issue templates; avoid blank issues.
+- Open issues only for bugs/features; route generic Q&A to Discussions.
+- Search duplicates before creating a new issue.
+- Start issues with `status:needs-review`.
+- Wait for `status:approved` before opening implementation PRs.
+- For bugs, include reproducible steps and expected vs actual behavior.
+- For features, include problem statement and proposed solution.
 
 ### branch-pr
-- Every PR must link an approved issue (`Closes/Fixes/Resolves #N`).
-- PR must have exactly one `type:*` label.
-- Branch naming must follow `type/description` with lowercase safe chars.
-- Commit messages must follow Conventional Commits.
-- Run required checks before merge (validation + shellcheck when applies).
-- Keep PR body complete: summary, changed files, test plan, checklist.
-- Do not open PRs without issue-first workflow completion.
+- Link each PR to an approved issue using `Closes/Fixes/Resolves #N`.
+- Use exactly one `type:*` label in each PR.
+- Name branches as `type/description` using lowercase safe characters.
+- Keep commit messages in Conventional Commits format.
+- Run required checks before merge.
+- Keep PR body complete (summary, changed files, test plan, checklist).
+- Do not open PRs before issue-first workflow is satisfied.
 
 ### skill-creator
-- Create skills only for reusable, repeated patterns (not one-off tasks).
-- Use standard structure: `skills/<name>/SKILL.md` (+ optional assets/references).
-- Frontmatter must include `name`, description with trigger, `license`, metadata.
-- Keep critical patterns explicit and actionable for agent execution.
-- Prefer concise examples and executable commands over long explanations.
-- Use local references for docs in `references/`, not web-only links.
-- Register new skills in project convention index if one exists.
+- Create skills only for reusable patterns, not one-off tasks.
+- Use standard layout: `skills/<name>/SKILL.md` plus optional assets.
+- Keep frontmatter complete: `name`, trigger-based description, license, metadata.
+- Write critical patterns as direct, actionable rules.
+- Prefer concise runnable examples over long narrative explanations.
+- Store references locally when possible.
+- Register newly created skills in project conventions when applicable.
 
 ### go-testing
-- Prefer table-driven tests for deterministic Go logic.
-- Test Bubbletea state transitions directly via `Model.Update()`.
+- Prefer table-driven tests for deterministic logic.
+- Test Bubbletea state transitions via direct `Model.Update()` calls.
 - Use `teatest` for interactive TUI integration flows.
-- Use golden files for stable UI output assertions.
-- Cover success and error paths explicitly in each test table.
-- Use `t.TempDir()` for filesystem-safe test isolation.
-- Run `go test ./...` and `go test -cover ./...` as default validation.
+- Use golden files for stable UI rendering assertions.
+- Cover happy path and failure path in each test suite.
+- Use `t.TempDir()` for isolated filesystem tests.
+- Validate with `go test ./...` and `go test -cover ./...`.
 
 ### judgment-day
-- Run two independent blind judges in parallel; never sequential review.
-- Resolve skill registry first and inject compact rules into judges/fixer prompts.
-- Synthesize verdicts by confirmed vs suspect vs contradiction findings.
-- Fix only confirmed critical/real warnings, then re-judge in parallel.
-- Treat theoretical warnings as INFO (report, do not block approval).
-- Never approve until thresholds pass (no confirmed criticals/real warnings).
-- Ask user before continuing beyond iteration limits or escalation.
+- Run two blind judges in parallel for adversarial review.
+- Resolve and inject compact rules into judge/fixer prompts first.
+- Merge findings by confirmed, suspect, and contradiction buckets.
+- Fix only confirmed critical/real warnings before re-judging.
+- Report theoretical concerns as INFO, not blockers.
+- Approve only when no confirmed critical or real warnings remain.
+- Ask user before continuing beyond configured retry/escalation limits.
 
 ## Project Conventions
 

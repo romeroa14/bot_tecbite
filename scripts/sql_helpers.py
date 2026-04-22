@@ -1,5 +1,156 @@
 """Reusable SQL helpers for n8n PostgreSQL query nodes."""
 
+SQL_UPSERT_INSTAGRAM_STATE = """
+-- Upsert state by conversation_id.
+-- Params:
+--   $1 => conversation_id
+--   $2 => user_id
+--   $3 => stage
+--   $4 => make
+--   $5 => model
+--   $6 => year
+--   $7 => category
+--   $8 => slots_complete
+--   $9 => last_message_id
+INSERT INTO instagram_conversation_state (
+    conversation_id,
+    user_id,
+    stage,
+    make,
+    model,
+    year,
+    category,
+    slots_complete,
+    last_message_id,
+    updated_at
+) VALUES (
+    $1,
+    $2,
+    $3,
+    NULLIF($4, ''),
+    NULLIF($5, ''),
+    $6::int,
+    NULLIF($7, ''),
+    COALESCE($8::boolean, FALSE),
+    NULLIF($9, ''),
+    NOW()
+)
+ON CONFLICT (conversation_id) DO UPDATE
+SET
+    user_id = EXCLUDED.user_id,
+    stage = EXCLUDED.stage,
+    make = COALESCE(EXCLUDED.make, instagram_conversation_state.make),
+    model = COALESCE(EXCLUDED.model, instagram_conversation_state.model),
+    year = COALESCE(EXCLUDED.year, instagram_conversation_state.year),
+    category = COALESCE(EXCLUDED.category, instagram_conversation_state.category),
+    slots_complete = EXCLUDED.slots_complete,
+    last_message_id = EXCLUDED.last_message_id,
+    updated_at = NOW()
+RETURNING *;
+""".strip()
+
+SQL_INSTAGRAM_IDEMPOTENCY_CHECK = """
+-- Verify if a message_id was already processed for a conversation.
+-- Params:
+--   $1 => conversation_id
+--   $2 => message_id
+SELECT EXISTS (
+    SELECT 1
+    FROM instagram_conversation_event
+    WHERE conversation_id = $1
+      AND message_id = $2
+) AS already_processed;
+""".strip()
+
+SQL_INSTAGRAM_STATE_BY_CONVERSATION = """
+-- Load current conversational state for a conversation_id.
+-- Params:
+--   $1 => conversation_id
+SELECT
+    conversation_id,
+    user_id,
+    stage,
+    make,
+    model,
+    year,
+    category,
+    slots_complete,
+    last_message_id,
+    updated_at
+FROM instagram_conversation_state
+WHERE conversation_id = $1
+LIMIT 1;
+""".strip()
+
+SQL_INSTAGRAM_EVENT_REGISTER = """
+-- Register conversational event idempotently by conversation+message+event_type.
+-- Params:
+--   $1 => conversation_id
+--   $2 => message_id
+--   $3 => event_type
+--   $4 => payload JSON string
+INSERT INTO instagram_conversation_event (
+    conversation_id,
+    message_id,
+    event_type,
+    payload
+) VALUES (
+    $1,
+    $2,
+    $3,
+    COALESCE(NULLIF($4, '')::jsonb, '{}'::jsonb)
+)
+ON CONFLICT (conversation_id, message_id, event_type) DO NOTHING
+RETURNING id;
+""".strip()
+
+SQL_FITMENT_LOOKUP = """
+-- Canonical fitment lookup by make/model/year/category.
+-- Params:
+--   $1 => make
+--   $2 => model
+--   $3 => year
+--   $4 => category
+SELECT
+    v.id AS vehicle_id,
+    COALESCE(v.make, v.brand) AS make,
+    v.model,
+    $3::int AS year,
+    COALESCE(v.category, v.type) AS category,
+    vpf.product_sku AS sku
+FROM vehicles v
+JOIN vehicle_product_fitment vpf ON vpf.vehicle_id = v.id
+WHERE LOWER(COALESCE(v.make, v.brand)) = LOWER($1)
+  AND LOWER(v.model) = LOWER($2)
+  AND $3::int BETWEEN v.year_start AND COALESCE(v.year_end, 9999)
+  AND LOWER(COALESCE(v.category, v.type, '')) = LOWER($4)
+  AND vpf.is_compatible = TRUE
+ORDER BY v.id ASC
+LIMIT 25;
+""".strip()
+
+SQL_LATEST_CATALOG_BY_SKU = """
+-- Latest catalog state for a SKU.
+-- Params:
+--   $1 => product_sku
+SELECT
+    ps.product_sku,
+    ps.title,
+    ps.price_amount,
+    ps.currency,
+    ps.stock_status,
+    ps.fresh_until,
+    s.snapshot_id,
+    s.snapshot_at,
+    s.status
+FROM tecbite_product_state ps
+JOIN tecbite_catalog_snapshot s ON s.snapshot_id = ps.snapshot_id
+WHERE LOWER(ps.product_sku) = LOWER($1)
+  AND s.status IN ('success', 'partial')
+ORDER BY s.snapshot_at DESC, ps.ingested_at DESC
+LIMIT 1;
+""".strip()
+
 SQL_LATEST_TECBITE_COMMERCE_BY_REFERENCE = """
 -- Latest Tecbite commerce state by SKU or product_reference.
 -- Params:
@@ -69,9 +220,100 @@ ORDER BY d.fetched_at DESC, c.chunk_no ASC
 LIMIT $2::int;
 """.strip()
 
+SQL_THULE_PGVECTOR_RETRIEVAL = """
+-- Runtime technical retrieval using pgvector (primary path, no ILIKE-first).
+-- Params:
+--   $1 => embedding vector literal as text: "[0.1,0.2,...]"
+--   $2 => minimum similarity threshold (0-1)
+--   $3 => top-k row limit
+SELECT
+    c.chunk_id,
+    c.chunk_no,
+    LEFT(c.chunk_text, 1200) AS chunk_text,
+    d.source_url,
+    COALESCE(c.metadata->>'source_ref', d.source_url || '#chunk-' || c.chunk_no::text) AS source_ref,
+    d.locale,
+    e.embedding_model,
+    (1 - (e.embedding <=> CAST($1 AS vector))) AS similarity_score
+FROM thule_document_embedding e
+JOIN thule_document_chunk c ON c.chunk_id = e.chunk_id
+JOIN thule_document d ON d.doc_id = c.doc_id
+WHERE d.is_active = TRUE
+  AND COALESCE(c.metadata->>'source', 'thule.com') = 'thule.com'
+  AND COALESCE(c.metadata->>'locale', d.locale) = 'es-PA'
+  AND (1 - (e.embedding <=> CAST($1 AS vector))) >= $2::double precision
+ORDER BY e.embedding <=> CAST($1 AS vector) ASC
+LIMIT $3::int;
+""".strip()
+
+SQL_INSTAGRAM_DAILY_KPI_REPORT = """
+-- Daily Instagram-first KPI rollup for MVP observability.
+-- Includes slot completion, fitment precision, technical no-source ratio, and p95 technical latency.
+WITH state_daily AS (
+    SELECT
+        COUNT(*) FILTER (WHERE slots_complete = TRUE) AS complete_slots,
+        COUNT(*) FILTER (WHERE stage = 'recommend') AS recommend_count
+    FROM instagram_conversation_state
+    WHERE updated_at >= NOW() - INTERVAL '1 day'
+),
+fitment_precision AS (
+    SELECT
+        COUNT(*) FILTER (WHERE is_compatible = TRUE)::numeric AS compatible_rows,
+        COUNT(*)::numeric AS total_rows
+    FROM vehicle_product_fitment
+),
+event_metrics AS (
+    SELECT
+        COUNT(*) FILTER (
+            WHERE event_type = 'recommendation'
+              AND COALESCE(payload->>'source_ref', '') = ''
+        )::numeric AS recommendations_without_source,
+        COUNT(*) FILTER (WHERE event_type = 'recommendation')::numeric AS recommendation_events,
+        percentile_cont(0.95) WITHIN GROUP (
+            ORDER BY NULLIF(payload->>'technical_latency_ms', '')::double precision
+        ) AS technical_latency_p95_ms
+    FROM instagram_conversation_event
+    WHERE created_at >= NOW() - INTERVAL '1 day'
+)
+SELECT
+    ROUND(
+        CASE
+            WHEN s.recommend_count = 0 THEN 0
+            ELSE (s.complete_slots::numeric / s.recommend_count::numeric) * 100
+        END,
+        2
+    ) AS slots_completion_percent,
+    ROUND(
+        CASE
+            WHEN f.total_rows = 0 THEN 0
+            ELSE (f.compatible_rows / f.total_rows) * 100
+        END,
+        2
+    ) AS compatibility_precision_percent,
+    ROUND(
+        CASE
+            WHEN e.recommendation_events = 0 THEN 0
+            ELSE (e.recommendations_without_source / e.recommendation_events) * 100
+        END,
+        2
+    ) AS technical_without_source_percent,
+    ROUND(COALESCE(e.technical_latency_p95_ms, 0)::numeric, 2) AS technical_latency_p95_ms
+FROM state_daily s
+CROSS JOIN fitment_precision f
+CROSS JOIN event_metrics e;
+""".strip()
+
 
 def get_sql_helper_queries():
     return {
+        'upsert_state': SQL_UPSERT_INSTAGRAM_STATE,
+        'state_by_conversation': SQL_INSTAGRAM_STATE_BY_CONVERSATION,
+        'idempotency_check': SQL_INSTAGRAM_IDEMPOTENCY_CHECK,
+        'register_event': SQL_INSTAGRAM_EVENT_REGISTER,
+        'fitment_lookup': SQL_FITMENT_LOOKUP,
+        'latest_catalog': SQL_LATEST_CATALOG_BY_SKU,
         'latest_tecbite_commerce_by_reference': SQL_LATEST_TECBITE_COMMERCE_BY_REFERENCE,
+        'thule_pgvector_retrieval': SQL_THULE_PGVECTOR_RETRIEVAL,
         'thule_chunks_source_thule_com_locale_es_pa': SQL_THULE_ES_PA_CHUNKS,
+        'instagram_daily_kpi_report': SQL_INSTAGRAM_DAILY_KPI_REPORT,
     }

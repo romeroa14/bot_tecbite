@@ -1,21 +1,56 @@
 import argparse
+import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 from sqlalchemy import create_engine, text
 
-# Configuración de base de datos
-DB_USER = os.getenv('DB_USER', 'postgres')
-DB_PASS = os.getenv('DB_PASS', 'Tecbite20$')
-DB_HOST = os.getenv('DB_HOST', 'n8n.yavingos.com')
-DB_PORT = os.getenv('DB_PORT', '5433')
-DB_NAME = os.getenv('DB_NAME', 'n8ntecbite_db')
-
-DATABASE_URI = f'postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}'
 DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parent / 'migrations'
+DEFAULT_RAW_DATA_DIR = Path(__file__).resolve().parent.parent / 'data' / 'raw'
+DEFAULT_EXCEL_FILES = (
+    'Fit Guide Thule Professional 2025-03-05.xlsx',
+    'New Rec Roof Racks_Rapid and Next gen_2025-10-01.xlsx',
+    'Recommendation List RMS 2025-09.xlsx',
+)
+REQUIRED_DB_ENV = ('DB_USER', 'DB_PASS', 'DB_HOST', 'DB_PORT', 'DB_NAME')
+MIN_COMPATIBILITY_PRECISION_PERCENT = 90.0
+
+
+def emit_structured_event(
+    event: str,
+    *,
+    stage: str,
+    payload: Dict[str, Any],
+    conversation_id: Optional[str] = None,
+    snapshot_version: Optional[str] = None,
+    error_code: Optional[str] = None,
+) -> None:
+    envelope = {
+        'event': event,
+        'stage': stage,
+        'conversation_id': conversation_id,
+        'snapshot_version': snapshot_version,
+        'error_code': error_code,
+    }
+    envelope.update(payload)
+    print(json.dumps(envelope, ensure_ascii=True))
+
+
+def build_database_uri() -> str:
+    missing = [name for name in REQUIRED_DB_ENV if not os.getenv(name)]
+    if missing:
+        raise EnvironmentError(
+            'Faltan variables de entorno de BD: '
+            + ', '.join(missing)
+            + '. Defina estas variables antes de ejecutar ETL.'
+        )
+    return (
+        f"postgresql+psycopg2://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}"
+        f"@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+    )
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
@@ -31,6 +66,22 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         '--migrations-dir',
         default=str(DEFAULT_MIGRATIONS_DIR),
         help='Directorio de migraciones SQL ejecutadas en orden lexicografico.',
+    )
+    parser.add_argument(
+        '--raw-data-dir',
+        default=str(DEFAULT_RAW_DATA_DIR),
+        help='Directorio base para archivos Excel cuando no se usa --excel-file.',
+    )
+    parser.add_argument(
+        '--excel-file',
+        action='append',
+        default=[],
+        help='Ruta de archivo Excel a procesar (se puede repetir).',
+    )
+    parser.add_argument(
+        '--allow-quality-warnings',
+        action='store_true',
+        help='Permite continuar aun con issues de calidad no criticos.',
     )
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -347,8 +398,152 @@ def transform_data(df):
     
     # Si year_end es nulo, asumir que sigue en producción (9999)
     df['year_end'] = df['year_end'].fillna(9999).astype(int)
+
+    # Canonical contract aliases for SQL-first recommendation.
+    df['make'] = df['brand']
+    df['category'] = coalesce_columns(df, ['type', 'category']).apply(clean_string)
         
     return df
+
+
+def resolve_excel_files(args: argparse.Namespace) -> List[str]:
+    if args.excel_file:
+        return [str(Path(path).expanduser().resolve()) for path in args.excel_file]
+
+    raw_data_dir = Path(args.raw_data_dir).expanduser().resolve()
+    return [str(raw_data_dir / filename) for filename in DEFAULT_EXCEL_FILES]
+
+
+def _collect_row_skus(row: pd.Series) -> List[str]:
+    sku_values: List[str] = []
+    for column in row.index:
+        col_lower = str(column).lower()
+        value = row.get(column)
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            continue
+        if 'sku' in col_lower or any(
+            token in col_lower
+            for token in ('wingbar', 'kit', 'foot', 'product', 'bracket', 'platform')
+        ):
+            sku_values.extend(parse_sku_list(value))
+    return list(dict.fromkeys([sku for sku in sku_values if sku]))
+
+
+def validate_fitment_quality(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    issues: List[Dict[str, Any]] = []
+    if df.empty:
+        issues.append(
+            {
+                'severity': 'critical',
+                'code': 'EMPTY_DATASET',
+                'message': 'No hay filas transformadas para cargar.',
+                'sample_rows': [],
+            }
+        )
+        return issues, {'rows': 0, 'rows_with_sku': 0, 'sku_coverage_percent': 0.0}
+
+    invalid_years = df[(df['year_start'] > df['year_end']) | (df['year_start'] < 1950)]
+    if not invalid_years.empty:
+        issues.append(
+            {
+                'severity': 'critical',
+                'code': 'INVALID_YEAR_RANGE',
+                'message': 'Se detectaron rangos de año invalidos.',
+                'sample_rows': invalid_years[['brand', 'model', 'year_start', 'year_end']]
+                .head(5)
+                .to_dict(orient='records'),
+            }
+        )
+
+    missing_core = df[df[['make', 'model', 'category']].isna().any(axis=1)]
+    if not missing_core.empty:
+        issues.append(
+            {
+                'severity': 'critical',
+                'code': 'MISSING_CANONICAL_FIELDS',
+                'message': 'Faltan campos canonicos make/model/category en filas de entrada.',
+                'sample_rows': missing_core[['brand', 'make', 'model', 'category']]
+                .head(5)
+                .to_dict(orient='records'),
+            }
+        )
+
+    sku_series = df.apply(_collect_row_skus, axis=1)
+    rows_with_sku = int((sku_series.apply(len) > 0).sum())
+    total_rows = int(len(df))
+    sku_coverage = (rows_with_sku / total_rows * 100.0) if total_rows else 0.0
+    if sku_coverage < 90.0:
+        issues.append(
+            {
+                'severity': 'critical',
+                'code': 'LOW_SKU_COVERAGE',
+                'message': f'Cobertura de SKU insuficiente ({sku_coverage:.2f}%).',
+                'sample_rows': df[sku_series.apply(len) == 0][['brand', 'model', 'source_file', 'source_sheet']]
+                .head(5)
+                .to_dict(orient='records'),
+            }
+        )
+
+    metrics = {
+        'rows': total_rows,
+        'rows_with_sku': rows_with_sku,
+        'sku_coverage_percent': round(sku_coverage, 2),
+    }
+    return issues, metrics
+
+
+def emit_quality_report(issues: List[Dict[str, Any]], metrics: Dict[str, Any]) -> None:
+    emit_structured_event(
+        'fitment_quality_report',
+        stage='fitment_etl',
+        payload={
+            'metrics': metrics,
+            'issues': issues,
+        },
+        error_code='QUALITY_CRITICAL' if any(issue.get('severity') == 'critical' for issue in issues) else None,
+    )
+
+
+def emit_fitment_precision_kpi(engine) -> None:
+    query = text(
+        """
+        WITH totals AS (
+            SELECT COUNT(*)::numeric AS total_vehicles
+            FROM vehicles
+        ),
+        with_fitment AS (
+            SELECT COUNT(DISTINCT vehicle_id)::numeric AS compatible_vehicles
+            FROM vehicle_product_fitment
+            WHERE is_compatible = TRUE
+        )
+        SELECT
+            CASE
+                WHEN t.total_vehicles = 0 THEN NULL
+                ELSE ROUND((w.compatible_vehicles / t.total_vehicles) * 100, 2)
+            END AS precision_percent
+        FROM totals t
+        CROSS JOIN with_fitment w
+        """
+    )
+    with engine.connect() as conn:
+        precision = conn.execute(query).scalar()
+
+    emit_structured_event(
+        'fitment_precision_kpi',
+        stage='fitment_etl',
+        payload={
+            'threshold_percent': MIN_COMPATIBILITY_PRECISION_PERCENT,
+            'precision_percent': float(precision) if precision is not None else None,
+            'status': (
+                'insufficient_data'
+                if precision is None
+                else ('ok' if float(precision) >= MIN_COMPATIBILITY_PRECISION_PERCENT else 'incident')
+            ),
+        },
+        error_code='FITMENT_PRECISION_BELOW_TARGET'
+        if precision is not None and float(precision) < MIN_COMPATIBILITY_PRECISION_PERCENT
+        else None,
+    )
 
 def load_to_database(df, engine):
     if df.empty:
@@ -360,16 +555,41 @@ def load_to_database(df, engine):
         with engine.begin() as conn:
             # 1. Insertar vehículos únicos
             print("Insertando vehículos...")
-            vehicles_cols = ['brand', 'model', 'year_start', 'year_end', 'type', 'roof_type', 'generation']
+            vehicles_cols = [
+                'brand',
+                'make',
+                'model',
+                'year_start',
+                'year_end',
+                'type',
+                'category',
+                'roof_type',
+                'generation',
+            ]
             vehicles_df = df[[c for c in vehicles_cols if c in df.columns]].copy()
 
             # Asegurar columnas esperadas y normalizar para replicar COALESCE del índice único:
             # (brand, model, year_start, COALESCE(year_end,9999), COALESCE(generation,''), COALESCE(roof_type,''))
-            for optional_col, default_value in [('year_end', 9999), ('generation', ''), ('roof_type', ''), ('type', '')]:
+            for optional_col, default_value in [
+                ('make', ''),
+                ('year_end', 9999),
+                ('generation', ''),
+                ('roof_type', ''),
+                ('type', ''),
+                ('category', ''),
+            ]:
                 if optional_col not in vehicles_df.columns:
                     vehicles_df[optional_col] = default_value
 
             vehicles_df['year_end'] = pd.to_numeric(vehicles_df['year_end'], errors='coerce').fillna(9999).astype(int)
+            vehicles_df['make'] = vehicles_df['make'].replace('', pd.NA).fillna(vehicles_df['brand']).astype(str).str.strip()
+            vehicles_df['category'] = (
+                vehicles_df['category']
+                .replace('', pd.NA)
+                .fillna(vehicles_df['type'])
+                .astype(str)
+                .str.strip()
+            )
             vehicles_df['generation'] = vehicles_df['generation'].fillna('').astype(str).str.strip()
             vehicles_df['roof_type'] = vehicles_df['roof_type'].fillna('').astype(str).str.strip()
             vehicles_df['type'] = vehicles_df['type'].fillna('').astype(str).str.strip()
@@ -645,24 +865,29 @@ def load_to_database(df, engine):
 
 def main(argv: Optional[Iterable[str]] = None):
     args = parse_args(argv)
-    raw_data_dir = '/var/www/html/tecbite/data/raw/'
-    excel_files = [
-        os.path.join(raw_data_dir, 'Fit Guide Thule Professional 2025-03-05.xlsx'),
-        os.path.join(raw_data_dir, 'New Rec Roof Racks_Rapid and Next gen_2025-10-01.xlsx'),
-        os.path.join(raw_data_dir, 'Recommendation List RMS 2025-09.xlsx')
-    ]
+    excel_files = resolve_excel_files(args)
     
     print("Iniciando proceso ETL de Thule...")
     df_raw = process_excel_files(excel_files)
     
     print("Transformando datos...")
     df_transformed = transform_data(df_raw)
+
+    issues, metrics = validate_fitment_quality(df_transformed)
+    emit_quality_report(issues, metrics)
+    has_critical = any(issue['severity'] == 'critical' for issue in issues)
+    if has_critical and not args.allow_quality_warnings:
+        raise ValueError(
+            'Carga cancelada por validaciones de calidad criticas. '
+            'Use --allow-quality-warnings solo para corridas de diagnostico.'
+        )
     
     try:
-        engine = create_engine(DATABASE_URI)
+        engine = create_engine(build_database_uri())
         if args.run_migrations:
             run_sql_migrations(engine, args.migrations_dir)
         load_to_database(df_transformed, engine)
+        emit_fitment_precision_kpi(engine)
     except Exception as e:
         print(f"Error al crear el engine de SQLAlchemy: {e}")
         

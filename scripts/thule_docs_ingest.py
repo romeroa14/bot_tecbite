@@ -44,6 +44,7 @@ USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 ThuleDocsIngest/1.0"
 )
+REQUIRED_DB_ENV = ("DB_USER", "DB_PASS", "DB_HOST", "DB_PORT", "DB_NAME")
 
 CONTENT_SELECTORS = (
     "main",
@@ -88,11 +89,18 @@ class DocumentRecord:
 
 
 def build_database_uri() -> str:
-    db_user = os.getenv("DB_USER", "postgres")
-    db_pass = os.getenv("DB_PASS", "Tecbite20$")
-    db_host = os.getenv("DB_HOST", "n8n.yavingos.com")
-    db_port = os.getenv("DB_PORT", "5433")
-    db_name = os.getenv("DB_NAME", "n8ntecbite_db")
+    missing = [name for name in REQUIRED_DB_ENV if not os.getenv(name)]
+    if missing:
+        raise EnvironmentError(
+            "Missing DB environment variables: "
+            + ", ".join(missing)
+            + ". Configure them before running docs ingest."
+        )
+    db_user = os.getenv("DB_USER")
+    db_pass = os.getenv("DB_PASS")
+    db_host = os.getenv("DB_HOST")
+    db_port = os.getenv("DB_PORT")
+    db_name = os.getenv("DB_NAME")
     return f"postgresql+psycopg2://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
 
 
@@ -281,6 +289,7 @@ class ThuleDocsIngestor:
                 "source": "thule.com",
                 "locale": DEFAULT_LOCALE,
                 "source_url": source_url,
+                "source_ref": f"{source_url}#chunk-{idx}",
             }
             chunks.append(
                 DocumentChunk(

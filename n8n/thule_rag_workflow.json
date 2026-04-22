@@ -11,154 +11,191 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
       "position": [
-        250,
+        240,
         300
       ]
     },
     {
       "parameters": {
-        "prompt": "Extract the following entities from the user message: Marca (Brand), Modelo (Model), Año (Year), Categoría (Category e.g., roof rack, bike rack). Return as JSON.\n\nUser Message: {{$json.body.message}}",
+        "jsCode": "const body = $json.body || {};\nconst sender = body.sender || {};\nconst requestReceivedAtMs = Date.now();\nconst conversationId = body.conversation_id || body.thread_id || sender.id || 'unknown-conversation';\nconst messageId = body.message_id || body.mid || `${conversationId}:${requestReceivedAtMs}`;\nreturn [{ json: { conversation_id: conversationId, user_id: sender.id || null, message_id: messageId, message_text: (body.message || body.text || '').toString().trim(), request_received_at_ms: requestReceivedAtMs } }];"
+      },
+      "name": "Normalize Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT EXISTS (SELECT 1 FROM instagram_conversation_event WHERE conversation_id = $1 AND message_id = $2) AS already_processed;",
+        "additionalFields": {
+          "queryParams": "={{$json.conversation_id}},{{$json.message_id}}"
+        }
+      },
+      "name": "Idempotency Check",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "boolean",
+        "value1": "={{$json.already_processed}}",
+        "rules": {
+          "rules": [
+            {
+              "value1": "={{$json.already_processed}}",
+              "operation": "equal",
+              "value2": true
+            },
+            {
+              "value1": "={{$json.already_processed}}",
+              "operation": "equal",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "name": "Duplicate Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        890,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "prompt": "Extract JSON with keys make, model, year, category and query_embedding (vector literal) from message: {{$node[\"Normalize Payload\"].json.message_text}}",
         "jsonOutput": true
       },
       "name": "LLM Entity Extraction",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 1,
       "position": [
-        450,
+        1110,
         300
-      ],
-      "notes": "Creates anchor entities for fitment, commerce, and documentary branches."
+      ]
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT v.brand, v.model, v.year_start, v.year_end, v.roof_type, fk.foot_pack_sku, fk.bar_front_sku, fk.bar_rear_sku, fk.kit_sku, fk.max_load_kg, vpf.product_sku, vpf.is_compatible, vpf.fitment_notes FROM vehicles v LEFT JOIN fitment_kits fk ON v.id = fk.vehicle_id LEFT JOIN vehicle_product_fitment vpf ON v.id = vpf.vehicle_id WHERE v.brand ILIKE '%' || $1 || '%' AND v.model % $2 AND v.year_start <= $3::int AND (v.year_end >= $3::int OR v.year_end IS NULL OR v.year_end = 9999) LIMIT 10;",
-        "additionalFields": {
-          "queryParams": "={{$json.extracted.Marca}},{{$json.extracted.Modelo}},{{$json.extracted.Año}}"
-        }
+        "jsCode": "const e = $json || {};\nconst make = e.make || null;\nconst model = e.model || null;\nconst year = e.year ? parseInt(String(e.year).replace(/[^0-9]/g, ''), 10) : null;\nconst category = e.category || null;\nlet stage = 'recommend';\nlet prompt = null;\nif (!make) { stage = 'ask_make'; prompt = 'Necesito la marca de tu vehiculo.'; }\nelse if (!model) { stage = 'ask_model'; prompt = 'Necesito el modelo del vehiculo.'; }\nelse if (!year) { stage = 'ask_year'; prompt = 'Necesito el ano del vehiculo.'; }\nelse if (!category) { stage = 'ask_category'; prompt = 'Que categoria buscas?'; }\nreturn [{ json: { ...$node['Normalize Payload'].json, make, model, year, category, stage, stage_prompt: prompt, slots_complete: stage === 'recommend', query_embedding: e.query_embedding || null } }];"
       },
-      "name": "PostgreSQL Search",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 1,
-      "position": [
-        680,
-        300
-      ],
-      "notes": "Fitment authority branch. Existing compatibility logic is preserved."
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "WITH latest_snapshot AS ( SELECT snapshot_id, snapshot_at FROM tecbite_catalog_snapshot WHERE status IN ('success','partial') ORDER BY snapshot_at DESC LIMIT 1 ) SELECT ps.product_sku, ps.title, ps.price_amount, ps.currency, ps.stock_status, ps.promo_text, ps.source_url, ps.fresh_until, ls.snapshot_at FROM latest_snapshot ls JOIN tecbite_product_state ps ON ps.snapshot_id = ls.snapshot_id WHERE ($1 = '' OR ps.category ILIKE '%' || $1 || '%' OR ps.title ILIKE '%' || $1 || '%') ORDER BY ps.ingested_at DESC LIMIT 1;",
-        "additionalFields": {
-          "queryParams": "={{$json.extracted.Categoría || $json.extracted.Category || ''}}"
-        }
-      },
-      "name": "Tecbite Latest Commerce Query",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 1,
-      "position": [
-        680,
-        120
-      ],
-      "notes": "MVP practical branch querying latest Tecbite snapshot/state for transactional fields."
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "SELECT c.chunk_id, LEFT(c.chunk_text, 600) AS chunk_text, d.source_url, d.locale, COALESCE(c.metadata->>'source', '') AS source FROM thule_document_chunk c JOIN thule_document d ON d.doc_id = c.doc_id WHERE d.is_active = TRUE AND d.locale = 'es-PA' AND LOWER(COALESCE(c.metadata->>'source', '')) = 'thule.com' AND ( ($1 <> '' AND c.chunk_text ILIKE '%' || $1 || '%') OR ($2 <> '' AND c.chunk_text ILIKE '%' || $2 || '%') OR ($3 <> '' AND c.chunk_text ILIKE '%' || $3 || '%') OR ($1 = '' AND $2 = '' AND $3 = '') ) ORDER BY c.created_at DESC LIMIT 5;",
-        "additionalFields": {
-          "queryParams": "={{$json.extracted.Marca || ''}},{{$json.extracted.Modelo || ''}},{{$json.extracted.Categoría || $json.extracted.Category || ''}}"
-        }
-      },
-      "name": "Thule Context Query",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 1,
-      "position": [
-        680,
-        500
-      ],
-      "notes": "MVP fallback retrieval via ILIKE. TODO: switch to PGVector similarity query when node config supports vector parameterization."
-    },
-    {
-      "parameters": {
-        "jsCode": "const fitmentItems = $items('PostgreSQL Search', 0, 0) || [];\nconst commerceItems = $items('Tecbite Latest Commerce Query', 0, 0) || [];\nconst thuleItems = $items('Thule Context Query', 0, 0) || [];\n\nconst fitment = fitmentItems.length > 0 ? fitmentItems[0].json : null;\nconst commerce = commerceItems.length > 0 ? commerceItems[0].json : null;\nconst contextChunks = thuleItems.slice(0, 5).map((item) => item.json);\n\nlet commerceStalenessMinutes = null;\nif (commerce && commerce.snapshot_at) {\n  const nowMs = Date.now();\n  const snapshotMs = Date.parse(commerce.snapshot_at);\n  if (!Number.isNaN(snapshotMs)) {\n    commerceStalenessMinutes = Math.max(0, Math.round((nowMs - snapshotMs) / 60000));\n  }\n}\n\nconst staleHard = commerceStalenessMinutes !== null && commerceStalenessMinutes > 120;\nconst degradedMode = !commerce || staleHard || contextChunks.length === 0;\n\nconst mergedPayload = {\n  compatibility: fitment\n    ? {\n        authority: 'fitment_sql',\n        product_sku: fitment.product_sku || null,\n        is_compatible: fitment.is_compatible,\n        fitment_notes: fitment.fitment_notes || null,\n      }\n    : {\n        authority: 'fitment_sql',\n        status: 'no_confirmed_fit',\n      },\n  commerce: commerce && !staleHard\n    ? {\n        authority: 'tecbite_snapshot',\n        product_sku: commerce.product_sku,\n        title: commerce.title,\n        price_amount: commerce.price_amount,\n        currency: commerce.currency,\n        stock_status: commerce.stock_status,\n        promo_text: commerce.promo_text,\n      }\n    : {\n        authority: 'tecbite_snapshot',\n        status: 'commerce_unavailable_or_stale',\n      },\n  context: contextChunks.map((chunk) => ({\n    authority: 'thule_docs',\n    chunk_id: chunk.chunk_id,\n    source_url: chunk.source_url,\n    locale: chunk.locale,\n    text: chunk.chunk_text,\n  })),\n};\n\nconst provenance = {\n  fitment_ref: fitment ? `${fitment.brand || ''}:${fitment.model || ''}:${fitment.year_start || ''}-${fitment.year_end || ''}` : null,\n  tecbite_snapshot_at: commerce ? commerce.snapshot_at || null : null,\n  tecbite_source_url: commerce ? commerce.source_url || null : null,\n  thule_chunk_ids: contextChunks.map((chunk) => chunk.chunk_id),\n  conflict_flags: staleHard ? ['commerce_stale_hard_threshold'] : [],\n};\n\nreturn [\n  {\n    json: {\n      rowCount: fitmentItems.length,\n      merged_payload: mergedPayload,\n      provenance,\n      routing_decision: {\n        fitment: true,\n        commerce: !!commerce,\n        context: contextChunks.length > 0,\n      },\n      degraded_mode: degradedMode,\n      commerce_staleness_minutes: commerceStalenessMinutes,\n      precedence_conflict_count: provenance.conflict_flags.length,\n    },\n  },\n];"
-      },
-      "name": "Deterministic Merge Strategy (MVP)",
+      "name": "Resolve Stage",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        930,
+        1320,
         300
-      ],
-      "notes": "Deterministic precedence is enforced: fitment > tecbite > thule. Emits provenance + observability markers."
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO instagram_conversation_state (conversation_id, user_id, stage, make, model, year, category, slots_complete, last_message_id, updated_at) VALUES ($1,$2,$3,NULLIF($4,''),NULLIF($5,''),$6::int,NULLIF($7,''),$8::boolean,$9,NOW()) ON CONFLICT (conversation_id) DO UPDATE SET user_id=EXCLUDED.user_id, stage=EXCLUDED.stage, make=COALESCE(EXCLUDED.make, instagram_conversation_state.make), model=COALESCE(EXCLUDED.model, instagram_conversation_state.model), year=COALESCE(EXCLUDED.year, instagram_conversation_state.year), category=COALESCE(EXCLUDED.category, instagram_conversation_state.category), slots_complete=EXCLUDED.slots_complete, last_message_id=EXCLUDED.last_message_id, updated_at=NOW() RETURNING *;",
+        "additionalFields": {
+          "queryParams": "={{$json.conversation_id}},{{$json.user_id}},{{$json.stage}},{{$json.make || ''}},{{$json.model || ''}},{{$json.year || ''}},{{$json.category || ''}},{{$json.slots_complete}},{{$json.message_id}}"
+        }
+      },
+      "name": "Persist State",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        300
+      ]
     },
     {
       "parameters": {
         "dataType": "string",
-        "value1": "={{$json.rowCount}}",
+        "value1": "={{$json.stage}}",
         "rules": {
           "rules": [
             {
-              "value1": "={{$json.rowCount}}",
+              "value1": "={{$json.stage}}",
               "operation": "equal",
-              "value2": "1"
+              "value2": "recommend"
             },
             {
-              "value1": "={{$json.rowCount}}",
-              "operation": "larger",
-              "value2": "1"
-            },
-            {
-              "value1": "={{$json.rowCount}}",
-              "operation": "equal",
-              "value2": "0"
+              "value1": "={{$json.stage}}",
+              "operation": "notEqual",
+              "value2": "recommend"
             }
           ]
         }
       },
-      "name": "Switch Routing",
+      "name": "Stage Switch",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 1,
       "position": [
-        1140,
+        1750,
         300
       ]
     },
     {
       "parameters": {
-        "prompt": "Format the response for the user based on deterministic merge payload. Compatibility MUST come from fitment SQL, commerce from Tecbite snapshot, and narrative from Thule docs.\n\nMerged Payload: {{$json.merged_payload}}\nProvenance: {{$json.provenance}}\nRouting Decision: {{$json.routing_decision}}\nDegraded Mode: {{$json.degraded_mode}}\nCommerce Staleness Minutes: {{$json.commerce_staleness_minutes}}"
+        "operation": "executeQuery",
+        "query": "SELECT v.id AS vehicle_id, vpf.product_sku AS sku FROM vehicles v JOIN vehicle_product_fitment vpf ON vpf.vehicle_id = v.id WHERE LOWER(COALESCE(v.make, v.brand)) = LOWER($1) AND LOWER(v.model) = LOWER($2) AND $3::int BETWEEN v.year_start AND COALESCE(v.year_end,9999) AND LOWER(COALESCE(v.category, v.type,'')) = LOWER($4) AND vpf.is_compatible = TRUE LIMIT 1;",
+        "additionalFields": {
+          "queryParams": "={{$json.make}},{{$json.model}},{{$json.year}},{{$json.category}}"
+        }
       },
-      "name": "LLM Formatting (Exact Match)",
-      "type": "n8n-nodes-base.httpRequest",
+      "name": "Fitment Lookup",
+      "type": "n8n-nodes-base.postgres",
       "typeVersion": 1,
       "position": [
-        1360,
-        100
+        1970,
+        200
       ]
     },
     {
       "parameters": {
-        "prompt": "Ask the user for clarification based on these multiple options without breaking source precedence.\n\nMerged Payload: {{$json.merged_payload}}\nProvenance: {{$json.provenance}}\nRouting Decision: {{$json.routing_decision}}\nDegraded Mode: {{$json.degraded_mode}}"
+        "operation": "executeQuery",
+        "query": "WITH latest_snapshot AS (SELECT snapshot_id, snapshot_at FROM tecbite_catalog_snapshot WHERE status IN ('success','partial') ORDER BY snapshot_at DESC LIMIT 1), commerce AS (SELECT ps.product_sku, ps.price_amount, ps.currency, ps.stock_status, ls.snapshot_id, ls.snapshot_at, EXTRACT(EPOCH FROM (NOW() - ls.snapshot_at))/60.0 AS snapshot_age_minutes FROM latest_snapshot ls JOIN tecbite_product_state ps ON ps.snapshot_id = ls.snapshot_id WHERE LOWER(ps.product_sku)=LOWER($1) LIMIT 1), technical AS (SELECT c.chunk_id, LEFT(c.chunk_text, 650) AS chunk_text, COALESCE(c.metadata->>'source_ref', d.source_url || '#chunk-' || c.chunk_no::text) AS source_ref, (1 - (e.embedding <=> CAST(NULLIF($2,'') AS vector))) AS similarity FROM thule_document_embedding e JOIN thule_document_chunk c ON c.chunk_id = e.chunk_id JOIN thule_document d ON d.doc_id = c.doc_id WHERE d.is_active = TRUE AND NULLIF($2,'') IS NOT NULL AND (1 - (e.embedding <=> CAST(NULLIF($2,'') AS vector))) >= 0.76 ORDER BY e.embedding <=> CAST(NULLIF($2,'') AS vector) ASC LIMIT 1) SELECT c.product_sku, c.price_amount, c.currency, c.stock_status, c.snapshot_id, c.snapshot_age_minutes, t.chunk_text, t.source_ref, t.similarity FROM commerce c LEFT JOIN technical t ON TRUE;",
+        "additionalFields": {
+          "queryParams": "={{$json.sku}},{{$json.query_embedding || ''}}"
+        }
       },
-      "name": "LLM Formatting (Multiple)",
-      "type": "n8n-nodes-base.httpRequest",
+      "name": "Catalog + PGVector Runtime",
+      "type": "n8n-nodes-base.postgres",
       "typeVersion": 1,
       "position": [
-        1360,
+        2180,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $json || {};\nconst state = $node['Resolve Stage'].json;\nconst startedAt = Number(state.request_received_at_ms || Date.now());\nconst technicalLatencyMs = Math.max(0, Date.now() - startedAt);\nlet response = state.stage_prompt || '';\nlet eventType = 'state_update';\nlet errorCode = null;\nif (state.stage === 'recommend') {\n  eventType = 'recommendation';\n  if (!row.product_sku) { response = 'No encuentro compatibilidad confirmada. Te paso con un asesor humano.'; eventType = 'handoff'; errorCode = 'NO_SQL_FIT'; }\n  else if (!row.snapshot_id || Number(row.snapshot_age_minutes || 9999) > 1440 || String(row.stock_status || '').toLowerCase().includes('out')) { response = 'Tengo compatibilidad, pero stock/precio no estan confirmados en tiempo real. Te conecto con un asesor.'; eventType = 'handoff'; errorCode = 'STOCK_UNCONFIRMED'; }\n  else if (!row.source_ref) { response = 'No tengo evidencia tecnica trazable para responder con seguridad. Te conecto con un asesor.'; eventType = 'handoff'; errorCode = 'LOW_TECH_EVIDENCE'; }\n  else { response = `SKU ${row.product_sku}, precio ${row.price_amount || 'no confirmado'} ${row.currency || ''}, stock ${row.stock_status || 'no confirmado'}. Fuente tecnica: ${row.source_ref}.`; }\n}\nreturn [{ json: { ...state, formatted_response: response, event_type: eventType, source_ref: row.source_ref || null, snapshot_version: row.snapshot_id || null, technical_latency_ms: state.stage === 'recommend' ? technicalLatencyMs : null, error_code: errorCode } }];"
+      },
+      "name": "Compose Response + Guardrails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2390,
         300
       ]
     },
     {
       "parameters": {
-        "prompt": "Tell the user we couldn't find a fit for their vehicle. Keep compatibility as fitment authority and include provenance placeholders.\n\nMerged Payload: {{$json.merged_payload}}\nProvenance: {{$json.provenance}}\nRouting Decision: {{$json.routing_decision}}\nDegraded Mode: {{$json.degraded_mode}}"
+        "operation": "executeQuery",
+        "query": "INSERT INTO instagram_conversation_event (conversation_id, message_id, event_type, payload) VALUES ($1,$2,$3,COALESCE(NULLIF($4,'')::jsonb,'{}'::jsonb)) ON CONFLICT (conversation_id, message_id, event_type) DO NOTHING RETURNING id;",
+        "additionalFields": {
+          "queryParams": "={{$json.conversation_id}},{{$json.message_id}},{{$json.event_type}},{{$json.stage ? JSON.stringify({ stage: $json.stage, source_ref: $json.source_ref, snapshot_version: $json.snapshot_version, technical_latency_ms: $json.technical_latency_ms, error_code: $json.error_code }) : '{}'}}"
+        }
       },
-      "name": "LLM Formatting (No Fit)",
-      "type": "n8n-nodes-base.httpRequest",
+      "name": "Register Event",
+      "type": "n8n-nodes-base.postgres",
       "typeVersion": 1,
       "position": [
-        1360,
-        500
+        2600,
+        300
       ]
     },
     {
@@ -183,8 +220,20 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 1,
       "position": [
-        1600,
+        2810,
         300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { formatted_response: 'Mensaje duplicado detectado; se mantiene el estado actual.' } }];"
+      },
+      "name": "Duplicate Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1110,
+        480
       ]
     }
   ],
@@ -193,7 +242,58 @@
       "main": [
         [
           {
+            "node": "Normalize Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Payload": {
+      "main": [
+        [
+          {
+            "node": "Idempotency Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Idempotency Check": {
+      "main": [
+        [
+          {
+            "node": "Duplicate Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate Switch": {
+      "main": [
+        [
+          {
+            "node": "Duplicate Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "LLM Entity Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate Response": {
+      "main": [
+        [
+          {
+            "node": "Instagram Send Message",
             "type": "main",
             "index": 0
           }
@@ -204,115 +304,87 @@
       "main": [
         [
           {
-            "node": "PostgreSQL Search",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Tecbite Latest Commerce Query",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Thule Context Query",
+            "node": "Resolve Stage",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "PostgreSQL Search": {
+    "Resolve Stage": {
       "main": [
         [
           {
-            "node": "Deterministic Merge Strategy (MVP)",
+            "node": "Persist State",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Tecbite Latest Commerce Query": {
+    "Persist State": {
       "main": [
         [
           {
-            "node": "Deterministic Merge Strategy (MVP)",
+            "node": "Stage Switch",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Thule Context Query": {
+    "Stage Switch": {
       "main": [
         [
           {
-            "node": "Deterministic Merge Strategy (MVP)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Deterministic Merge Strategy (MVP)": {
-      "main": [
-        [
-          {
-            "node": "Switch Routing",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Switch Routing": {
-      "main": [
-        [
-          {
-            "node": "LLM Formatting (Exact Match)",
+            "node": "Fitment Lookup",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "LLM Formatting (Multiple)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "LLM Formatting (No Fit)",
+            "node": "Compose Response + Guardrails",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "LLM Formatting (Exact Match)": {
+    "Fitment Lookup": {
       "main": [
         [
           {
-            "node": "Instagram Send Message",
+            "node": "Catalog + PGVector Runtime",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "LLM Formatting (Multiple)": {
+    "Catalog + PGVector Runtime": {
       "main": [
         [
           {
-            "node": "Instagram Send Message",
+            "node": "Compose Response + Guardrails",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "LLM Formatting (No Fit)": {
+    "Compose Response + Guardrails": {
+      "main": [
+        [
+          {
+            "node": "Register Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register Event": {
       "main": [
         [
           {
