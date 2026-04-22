@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "tecbite-postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://postgres:Tecbite20%24@n8n.yavingos.com:5433/n8ntecbite_db"
+      ]
+    }
+  }
+}

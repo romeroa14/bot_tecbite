@@ -1,0 +1,330 @@
+{
+  "name": "Thule RAG Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instagram-webhook",
+        "options": {}
+      },
+      "name": "Instagram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "prompt": "Extract the following entities from the user message: Marca (Brand), Modelo (Model), Año (Year), Categoría (Category e.g., roof rack, bike rack). Return as JSON.\n\nUser Message: {{$json.body.message}}",
+        "jsonOutput": true
+      },
+      "name": "LLM Entity Extraction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        450,
+        300
+      ],
+      "notes": "Creates anchor entities for fitment, commerce, and documentary branches."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT v.brand, v.model, v.year_start, v.year_end, v.roof_type, fk.foot_pack_sku, fk.bar_front_sku, fk.bar_rear_sku, fk.kit_sku, fk.max_load_kg, vpf.product_sku, vpf.is_compatible, vpf.fitment_notes FROM vehicles v LEFT JOIN fitment_kits fk ON v.id = fk.vehicle_id LEFT JOIN vehicle_product_fitment vpf ON v.id = vpf.vehicle_id WHERE v.brand ILIKE '%' || $1 || '%' AND v.model % $2 AND v.year_start <= $3::int AND (v.year_end >= $3::int OR v.year_end IS NULL OR v.year_end = 9999) LIMIT 10;",
+        "additionalFields": {
+          "queryParams": "={{$json.extracted.Marca}},{{$json.extracted.Modelo}},{{$json.extracted.Año}}"
+        }
+      },
+      "name": "PostgreSQL Search",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ],
+      "notes": "Fitment authority branch. Existing compatibility logic is preserved."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH latest_snapshot AS ( SELECT snapshot_id, snapshot_at FROM tecbite_catalog_snapshot WHERE status IN ('success','partial') ORDER BY snapshot_at DESC LIMIT 1 ) SELECT ps.product_sku, ps.title, ps.price_amount, ps.currency, ps.stock_status, ps.promo_text, ps.source_url, ps.fresh_until, ls.snapshot_at FROM latest_snapshot ls JOIN tecbite_product_state ps ON ps.snapshot_id = ls.snapshot_id WHERE ($1 = '' OR ps.category ILIKE '%' || $1 || '%' OR ps.title ILIKE '%' || $1 || '%') ORDER BY ps.ingested_at DESC LIMIT 1;",
+        "additionalFields": {
+          "queryParams": "={{$json.extracted.Categoría || $json.extracted.Category || ''}}"
+        }
+      },
+      "name": "Tecbite Latest Commerce Query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        680,
+        120
+      ],
+      "notes": "MVP practical branch querying latest Tecbite snapshot/state for transactional fields."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.chunk_id, LEFT(c.chunk_text, 600) AS chunk_text, d.source_url, d.locale, COALESCE(c.metadata->>'source', '') AS source FROM thule_document_chunk c JOIN thule_document d ON d.doc_id = c.doc_id WHERE d.is_active = TRUE AND d.locale = 'es-PA' AND LOWER(COALESCE(c.metadata->>'source', '')) = 'thule.com' AND ( ($1 <> '' AND c.chunk_text ILIKE '%' || $1 || '%') OR ($2 <> '' AND c.chunk_text ILIKE '%' || $2 || '%') OR ($3 <> '' AND c.chunk_text ILIKE '%' || $3 || '%') OR ($1 = '' AND $2 = '' AND $3 = '') ) ORDER BY c.created_at DESC LIMIT 5;",
+        "additionalFields": {
+          "queryParams": "={{$json.extracted.Marca || ''}},{{$json.extracted.Modelo || ''}},{{$json.extracted.Categoría || $json.extracted.Category || ''}}"
+        }
+      },
+      "name": "Thule Context Query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        680,
+        500
+      ],
+      "notes": "MVP fallback retrieval via ILIKE. TODO: switch to PGVector similarity query when node config supports vector parameterization."
+    },
+    {
+      "parameters": {
+        "jsCode": "const fitmentItems = $items('PostgreSQL Search', 0, 0) || [];\nconst commerceItems = $items('Tecbite Latest Commerce Query', 0, 0) || [];\nconst thuleItems = $items('Thule Context Query', 0, 0) || [];\n\nconst fitment = fitmentItems.length > 0 ? fitmentItems[0].json : null;\nconst commerce = commerceItems.length > 0 ? commerceItems[0].json : null;\nconst contextChunks = thuleItems.slice(0, 5).map((item) => item.json);\n\nlet commerceStalenessMinutes = null;\nif (commerce && commerce.snapshot_at) {\n  const nowMs = Date.now();\n  const snapshotMs = Date.parse(commerce.snapshot_at);\n  if (!Number.isNaN(snapshotMs)) {\n    commerceStalenessMinutes = Math.max(0, Math.round((nowMs - snapshotMs) / 60000));\n  }\n}\n\nconst staleHard = commerceStalenessMinutes !== null && commerceStalenessMinutes > 120;\nconst degradedMode = !commerce || staleHard || contextChunks.length === 0;\n\nconst mergedPayload = {\n  compatibility: fitment\n    ? {\n        authority: 'fitment_sql',\n        product_sku: fitment.product_sku || null,\n        is_compatible: fitment.is_compatible,\n        fitment_notes: fitment.fitment_notes || null,\n      }\n    : {\n        authority: 'fitment_sql',\n        status: 'no_confirmed_fit',\n      },\n  commerce: commerce && !staleHard\n    ? {\n        authority: 'tecbite_snapshot',\n        product_sku: commerce.product_sku,\n        title: commerce.title,\n        price_amount: commerce.price_amount,\n        currency: commerce.currency,\n        stock_status: commerce.stock_status,\n        promo_text: commerce.promo_text,\n      }\n    : {\n        authority: 'tecbite_snapshot',\n        status: 'commerce_unavailable_or_stale',\n      },\n  context: contextChunks.map((chunk) => ({\n    authority: 'thule_docs',\n    chunk_id: chunk.chunk_id,\n    source_url: chunk.source_url,\n    locale: chunk.locale,\n    text: chunk.chunk_text,\n  })),\n};\n\nconst provenance = {\n  fitment_ref: fitment ? `${fitment.brand || ''}:${fitment.model || ''}:${fitment.year_start || ''}-${fitment.year_end || ''}` : null,\n  tecbite_snapshot_at: commerce ? commerce.snapshot_at || null : null,\n  tecbite_source_url: commerce ? commerce.source_url || null : null,\n  thule_chunk_ids: contextChunks.map((chunk) => chunk.chunk_id),\n  conflict_flags: staleHard ? ['commerce_stale_hard_threshold'] : [],\n};\n\nreturn [\n  {\n    json: {\n      rowCount: fitmentItems.length,\n      merged_payload: mergedPayload,\n      provenance,\n      routing_decision: {\n        fitment: true,\n        commerce: !!commerce,\n        context: contextChunks.length > 0,\n      },\n      degraded_mode: degradedMode,\n      commerce_staleness_minutes: commerceStalenessMinutes,\n      precedence_conflict_count: provenance.conflict_flags.length,\n    },\n  },\n];"
+      },
+      "name": "Deterministic Merge Strategy (MVP)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        930,
+        300
+      ],
+      "notes": "Deterministic precedence is enforced: fitment > tecbite > thule. Emits provenance + observability markers."
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{$json.rowCount}}",
+        "rules": {
+          "rules": [
+            {
+              "value1": "={{$json.rowCount}}",
+              "operation": "equal",
+              "value2": "1"
+            },
+            {
+              "value1": "={{$json.rowCount}}",
+              "operation": "larger",
+              "value2": "1"
+            },
+            {
+              "value1": "={{$json.rowCount}}",
+              "operation": "equal",
+              "value2": "0"
+            }
+          ]
+        }
+      },
+      "name": "Switch Routing",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "prompt": "Format the response for the user based on deterministic merge payload. Compatibility MUST come from fitment SQL, commerce from Tecbite snapshot, and narrative from Thule docs.\n\nMerged Payload: {{$json.merged_payload}}\nProvenance: {{$json.provenance}}\nRouting Decision: {{$json.routing_decision}}\nDegraded Mode: {{$json.degraded_mode}}\nCommerce Staleness Minutes: {{$json.commerce_staleness_minutes}}"
+      },
+      "name": "LLM Formatting (Exact Match)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "prompt": "Ask the user for clarification based on these multiple options without breaking source precedence.\n\nMerged Payload: {{$json.merged_payload}}\nProvenance: {{$json.provenance}}\nRouting Decision: {{$json.routing_decision}}\nDegraded Mode: {{$json.degraded_mode}}"
+      },
+      "name": "LLM Formatting (Multiple)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "prompt": "Tell the user we couldn't find a fit for their vehicle. Keep compatibility as fitment authority and include provenance placeholders.\n\nMerged Payload: {{$json.merged_payload}}\nProvenance: {{$json.provenance}}\nRouting Decision: {{$json.routing_decision}}\nDegraded Mode: {{$json.degraded_mode}}"
+      },
+      "name": "LLM Formatting (No Fit)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v17.0/me/messages",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "recipient",
+              "value": "={{$node[\"Instagram Webhook\"].json.body.sender}}"
+            },
+            {
+              "name": "message",
+              "value": "={{$json.formatted_response}}"
+            }
+          ]
+        }
+      },
+      "name": "Instagram Send Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Instagram Webhook": {
+      "main": [
+        [
+          {
+            "node": "LLM Entity Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Entity Extraction": {
+      "main": [
+        [
+          {
+            "node": "PostgreSQL Search",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Tecbite Latest Commerce Query",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Thule Context Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PostgreSQL Search": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Merge Strategy (MVP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tecbite Latest Commerce Query": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Merge Strategy (MVP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Thule Context Query": {
+      "main": [
+        [
+          {
+            "node": "Deterministic Merge Strategy (MVP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deterministic Merge Strategy (MVP)": {
+      "main": [
+        [
+          {
+            "node": "Switch Routing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Routing": {
+      "main": [
+        [
+          {
+            "node": "LLM Formatting (Exact Match)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LLM Formatting (Multiple)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LLM Formatting (No Fit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Formatting (Exact Match)": {
+      "main": [
+        [
+          {
+            "node": "Instagram Send Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Formatting (Multiple)": {
+      "main": [
+        [
+          {
+            "node": "Instagram Send Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Formatting (No Fit)": {
+      "main": [
+        [
+          {
+            "node": "Instagram Send Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "thule-rag-workflow-001"
+}

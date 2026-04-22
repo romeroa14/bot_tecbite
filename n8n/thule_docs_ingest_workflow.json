@@ -1,0 +1,191 @@
+{
+  "name": "Thule Docs Ingest Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger (6h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        280
+      ],
+      "notes": "Cadence: every 6h for thule.com/es-pa documentary refresh and metadata consistency."
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "seed_url_arg",
+              "value": "--seed-url https://www.thule.com/es-pa/"
+            },
+            {
+              "name": "dry_run_arg",
+              "value": ""
+            },
+            {
+              "name": "max_pages_arg",
+              "value": ""
+            }
+          ]
+        }
+      },
+      "name": "Ingest Runtime Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        480,
+        120
+      ],
+      "notes": "Set `dry_run_arg` to `--dry-run` and optional `max_pages_arg` (e.g. `--max-pages 40`) for controlled runs."
+    },
+    {
+      "parameters": {
+        "command": "=python3 /var/www/html/tecbite/scripts/thule_docs_ingest.py {{$json.seed_url_arg || ''}} {{$json.max_pages_arg || ''}} {{$json.dry_run_arg || ''}}"
+      },
+      "name": "Run Thule Docs Ingest",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        500,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.exitCode}}",
+              "operation": "equal",
+              "value2": "0"
+            }
+          ]
+        }
+      },
+      "name": "Ingest Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        740,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "doc_ingest_event",
+              "value": "doc_ingest_success"
+            },
+            {
+              "name": "metadata_policy",
+              "value": "source=thule.com, locale=es-PA only (fallback locale handled at runtime when empty)."
+            }
+          ]
+        }
+      },
+      "name": "Build Success Event",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        980,
+        180
+      ],
+      "notes": "Aligns with ingestion assumptions documented in uploads/rag-in-n8n-1.md."
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "doc_ingest_event",
+              "value": "doc_ingest_failed"
+            },
+            {
+              "name": "error_summary",
+              "value": "={{$json.stderr || $json.stdout || \"Unknown docs ingest failure\"}}"
+            }
+          ]
+        }
+      },
+      "name": "Build Failure Event",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        980,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (6h)": {
+      "main": [
+        [
+          {
+            "node": "Ingest Runtime Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest Runtime Config": {
+      "main": [
+        [
+          {
+            "node": "Run Thule Docs Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Thule Docs Ingest": {
+      "main": [
+        [
+          {
+            "node": "Ingest Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "thule-docs-ingest-workflow-001"
+}

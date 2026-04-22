@@ -1,0 +1,188 @@
+{
+  "name": "Tecbite Catalog Ingest Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger (15m listing / 30m PDP)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        280
+      ],
+      "notes": "Cadence: listing refresh every 15m. Script handles PDP refresh target <=30m and sets fresh_until accordingly."
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "dry_run_arg",
+              "value": ""
+            },
+            {
+              "name": "max_products_arg",
+              "value": ""
+            }
+          ]
+        }
+      },
+      "name": "Ingest Runtime Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        500,
+        120
+      ],
+      "notes": "Set `dry_run_arg` to `--dry-run` for safe runs and `max_products_arg` (e.g. `--max-products 20`) when needed."
+    },
+    {
+      "parameters": {
+        "command": "=python3 /var/www/html/tecbite/scripts/tecbite_catalog_etl.py {{$json.dry_run_arg || ''}} {{$json.max_products_arg || ''}}"
+      },
+      "name": "Run Tecbite Catalog ETL",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        520,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.exitCode}}",
+              "operation": "equal",
+              "value2": "0"
+            }
+          ]
+        }
+      },
+      "name": "Ingest Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        760,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "catalog_ingest_event",
+              "value": "catalog_ingest_success"
+            },
+            {
+              "name": "freshness_assumption",
+              "value": "Expected fresh window <=30m, hard stale threshold 120m."
+            }
+          ]
+        }
+      },
+      "name": "Build Success Event",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        180
+      ],
+      "notes": "Use this payload to persist `catalog_ingest_*` observability events."
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "catalog_ingest_event",
+              "value": "catalog_ingest_failed"
+            },
+            {
+              "name": "error_summary",
+              "value": "={{$json.stderr || $json.stdout || \"Unknown ETL failure\"}}"
+            }
+          ]
+        }
+      },
+      "name": "Build Failure Event",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        380
+      ],
+      "notes": "Failure branch keeps ETL observable and enables alerting/retries."
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (15m listing / 30m PDP)": {
+      "main": [
+        [
+          {
+            "node": "Ingest Runtime Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest Runtime Config": {
+      "main": [
+        [
+          {
+            "node": "Run Tecbite Catalog ETL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Tecbite Catalog ETL": {
+      "main": [
+        [
+          {
+            "node": "Ingest Succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ingest Succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Build Success Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "tecbite-catalog-ingest-workflow-001"
+}
