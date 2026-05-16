@@ -1,0 +1,465 @@
+{
+  "name": "Tecbite AI Agent - Gran Workflow v6",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "instagram-webhook",
+        "options": {
+          "responseMode": "lastNode"
+        }
+      },
+      "name": "Instagram Webhook GET",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const q = $json.query || {};\nif (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === 'instagram-webhook') {\n  return [{ json: { challenge: q['hub.challenge'] } }];\n}\nreturn [{ json: { error: 'invalid token' } }];"
+      },
+      "name": "Verify GET",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instagram-webhook",
+        "options": {}
+      },
+      "name": "Instagram Webhook POST",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        100,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || {};\nconst messaging = body.entry?.[0]?.messaging?.[0] || {};\nif (messaging.is_echo === true) return [];\nconst text = (messaging.message?.text || '').trim();\nif (!text) return [];\nreturn [{ json: { user_id: messaging.sender?.id || null, message_text: text } }];"
+      },
+      "name": "Filter & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $json.message_text.toLowerCase();\nconst fitmentKW = ['toyota','honda','ford','chevrolet','hyundai','kia','nissan','mazda','ram','mitsubishi','suzuki','subaru','volkswagen','jeep','dodge','gmc','hilux','fortuner','rav4','4runner','prado','runner','tacoma','tundra','corolla','camry','yaris','crv','hrv','civic','accord','ranger','explorer','silverado','tahoe','tucson','santafe','sportage','sorento','frontier','pathfinder','cx5','cx-5','outlander','montero','vitara','forester','outback','tengo un','mi carro','mi vehículo','mi vehiculo','tengo una','pick up','pickup','camioneta','suv'];\nconst stockKW = ['precio','costo','cuánto','cuanto','disponible','stock','inventario','tienen','hay','comprar','pagar','vale','sale','oferta','promo'];\nconst intent = fitmentKW.some(kw => text.includes(kw)) ? 'FITMENT' : stockKW.some(kw => text.includes(kw)) ? 'STOCK' : 'GENERAL';\nreturn [{ json: { ...$json, intent } }];"
+      },
+      "name": "Intent Router",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        540,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.intent }}",
+        "rules": {
+          "rules": [
+            {
+              "value2": "FITMENT",
+              "output": 0
+            },
+            {
+              "value2": "STOCK",
+              "output": 1
+            },
+            {
+              "value2": "GENERAL",
+              "output": 2
+            }
+          ]
+        }
+      },
+      "name": "Switch Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        760,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer sk-05890be5fc0b4406a4a8c13180208026"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ model: 'deepseek-chat', max_tokens: 80, temperature: 0, messages: [{ role: 'system', content: 'Eres un extractor de entidades de vehículos. Analiza el mensaje y extrae la marca, modelo y año del vehículo mencionado. Devuelve ÚNICAMENTE un objeto JSON válido con las claves: brand (string o null), model (string o null), year (integer o null). Sin explicaciones, sin markdown, solo el JSON puro.' }, { role: 'user', content: $json.message_text }] }) }}"
+      },
+      "name": "Extract Vehicle Entity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        980,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawContent = $json.choices[0].message.content.trim();\nconst userId = $('Filter & Normalize').item.json.user_id;\nconst messageText = $('Filter & Normalize').item.json.message_text;\n\nlet entity = { brand: null, model: null, year: null };\ntry {\n  const clean = rawContent.replace(/```json|```/g, '').trim();\n  entity = JSON.parse(clean);\n} catch (e) {\n  return [{ json: { sql: null, user_id: userId, message_text: messageText, intent: 'FITMENT', no_vehicle_detected: true, debug: { parseError: e.message } } }];\n}\n\nconst { brand, model, year } = entity;\nif (!brand && !model) {\n  return [{ json: { sql: null, user_id: userId, message_text: messageText, intent: 'FITMENT', no_vehicle_detected: true, debug: { brand, model, year } } }];\n}\n\nconst brandClause = brand ? `AND v.brand ILIKE '%${brand.replace(/'/g, \"''\")}%'` : '';\nconst modelClause = model ? `AND v.model ILIKE '%${model.replace(/'/g, \"''\")}%'` : '';\nconst yearClause = year ? `AND v.year_start <= ${year} AND (v.year_end >= ${year} OR v.year_end >= 9999)` : '';\n\nconst sql = `\n  SELECT v.brand AS vehicle_brand, v.model AS vehicle_model, v.year_start AS year_from, v.year_end AS year_to,\n    v.roof_type, p.sku AS fitment_sku, p.name AS product_name, p.category AS product_category,\n    fmap.store_product_code, tps.title AS store_title,\n    tps.price_amount, tps.currency, tps.stock_status, tps.promo_text,\n    vpf.fitment_notes, vpf.pad_type\n  FROM vehicles v\n  JOIN vehicle_product_fitment vpf ON vpf.vehicle_id = v.id\n  JOIN products p ON p.sku = vpf.product_sku\n  LEFT JOIN fitment_store_sku_map fmap ON fmap.fitment_sku = p.sku\n  LEFT JOIN tecbite_product_state tps ON tps.product_sku = fmap.store_product_code AND tps.is_active = true\n  WHERE vpf.is_compatible = true ${brandClause} ${modelClause} ${yearClause}\n  ORDER BY tps.price_amount ASC NULLS LAST\n  LIMIT 6;\n`;\n\nreturn [{ json: { sql, user_id: userId, message_text: messageText, intent: 'FITMENT', year, no_vehicle_detected: false, debug: { brand, model, year } } }];"
+      },
+      "name": "Build Fitment SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {}
+      },
+      "name": "Query Fitment DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1420,
+        280
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Tecbite Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $json.message_text;\nconst textLower = text.toLowerCase();\n\n// Detectar marca mencionada\nconst mentionsThule = textLower.includes('thule');\nconst mentionsWT = textLower.includes('weathertech') || textLower.includes('weather tech');\n\n// Filtro de marca: solo la mencionada. Si ninguna o ambas → incluir las dos\nlet brandClause;\nif (mentionsWT && !mentionsThule) {\n  brandClause = \"tps.brand ILIKE '%WeatherTech%'\";\n} else if (mentionsThule && !mentionsWT) {\n  brandClause = \"tps.brand ILIKE '%Thule%'\";\n} else {\n  brandClause = \"(tps.brand ILIKE '%Thule%' OR tps.brand ILIKE '%WeatherTech%')\";\n}\n\nconst sql = `\n  SELECT tps.product_sku AS sku, tps.title, tps.brand, tps.category,\n    tps.price_amount, tps.currency, tps.stock_status, tps.promo_text\n  FROM tecbite_product_state tps\n  WHERE tps.is_active = true\n    AND ${brandClause}\n  ORDER BY\n    CASE tps.stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n    tps.price_amount ASC\n  LIMIT 5;\n`;\n\nreturn [{ json: { sql, user_id: $json.user_id, message_text: text, intent: 'STOCK', debug: { mentionsThule, mentionsWT } } }];"
+      },
+      "name": "Build Stock SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ $json.sql }}",
+        "options": {}
+      },
+      "name": "Query Stock DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        440
+      ],
+      "credentials": {
+        "postgres": {
+          "name": "Tecbite Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// CONTEXT BUILDER\n// El nodo Postgres elimina el JSON original. Leemos user_id y message_text\n// directamente desde Filter & Normalize para no perderlos.\nconst items = $input.all();\nconst first = items[0]?.json || {};\n\nconst filterNode = $('Filter & Normalize').item.json;\nconst userId = filterNode.user_id;\nconst messageText = filterNode.message_text;\n\n// Inferir intent desde las columnas SQL\nconst intent = first.vehicle_brand ? 'FITMENT' : first.sku ? 'STOCK' : 'GENERAL';\n\nlet contextText = '';\n\nif (intent === 'FITMENT') {\n  if (items.length === 0 || !first.vehicle_brand) {\n    contextText = 'No hay productos compatibles en nuestro catálogo para ese vehículo aún.';\n  } else {\n    const withPrice = items.filter(i => i.json.price_amount && parseFloat(i.json.price_amount) > 0);\n    const withoutPrice = items.filter(i => !i.json.price_amount || parseFloat(i.json.price_amount) === 0);\n    if (withPrice.length > 0) {\n      contextText = 'PRODUCTOS COMPATIBLES CON PRECIO:\\n';\n      withPrice.forEach(item => {\n        const i = item.json;\n        const yearTo = i.year_to >= 9999 ? 'presente' : i.year_to;\n        contextText += `• ${i.vehicle_brand} ${i.vehicle_model} (${i.year_from}-${yearTo})`;\n        contextText += ` | ${i.store_title || i.product_name}`;\n        contextText += ` | $${i.price_amount} ${i.currency} | Stock: ${i.stock_status}`;\n        if (i.promo_text) contextText += ` | PROMO: ${i.promo_text}`;\n        if (i.fitment_notes) contextText += ` | Nota: ${i.fitment_notes}`;\n        contextText += '\\n';\n      });\n    }\n    if (withoutPrice.length > 0) {\n      contextText += `\\nACCESORIOS ADICIONALES COMPATIBLES (sin precio cargado aún): ${withoutPrice.map(i => i.json.product_name).join(', ')}\\n`;\n    }\n  }\n} else if (intent === 'STOCK') {\n  if (items.length === 0 || !first.sku) {\n    contextText = 'No encontré productos de esa marca en nuestro inventario activo.';\n  } else {\n    contextText = 'PRODUCTOS DISPONIBLES:\\n';\n    items.forEach(item => {\n      const i = item.json;\n      contextText += `• SKU: ${i.sku} | ${i.title} (${i.brand})`;\n      contextText += ` | $${i.price_amount} ${i.currency} | Stock: ${i.stock_status}`;\n      if (i.promo_text) contextText += ` | PROMO: ${i.promo_text}`;\n      contextText += '\\n';\n    });\n  }\n}\n\nreturn [{ json: { user_id: userId, message_text: messageText, db_context: contextText, intent } }];"
+      },
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1640,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const filterNode = $('Filter & Normalize').item.json;\nreturn [{ json: { user_id: filterNode.user_id, message_text: filterNode.message_text, db_context: '', intent: 'GENERAL' } }];"
+      },
+      "name": "Prepare General",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        980,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construye el payload de DeepSeek de forma segura con JSON.stringify\nconst dbContext = $json.db_context || '';\nconst messageText = $json.message_text;\nconst userId = $json.user_id;\nconst intent = $json.intent || 'GENERAL';\n\n// Regla de vehículo: solo aplica para FITMENT, NO para STOCK\nconst vehicleRule = intent === 'FITMENT'\n  ? '- Si el usuario no ha indicado marca, modelo y año de su vehículo, pídeselos antes de recomendar.'\n  : '- NO pidas datos del vehículo para preguntas de precio o stock. Muestra lo disponible directamente.';\n\nconst systemPrompt = `Eres el asesor virtual de Tecbite Panama, especialista en accesorios Thule y WeatherTech.\n\nREGLAS:\n- Sé amable, breve y directo. Máximo 3 párrafos cortos.\n${vehicleRule}\n- NUNCA inventes precios ni SKUs. Usa SOLO los datos que te dan en CONTEXTO.\n- Si no hay datos en contexto o el stock es 0, sé honesto y ofrece contacto por Instagram.\n- Si hay PROMO en el contexto, mencionalo con entusiasmo.\n- Responde SIEMPRE en español.\n\nCONTEXTO DE BASE DE DATOS:\n${dbContext || 'Sin contexto SQL (consulta general).'}`;\n\nconst payload = {\n  model: 'deepseek-chat',\n  max_tokens: 400,\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: messageText }\n  ]\n};\n\nreturn [{ json: { payload: JSON.stringify(payload), user_id: userId } }];"
+      },
+      "name": "Prepare DeepSeek Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1860,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer sk-05890be5fc0b4406a4a8c13180208026"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.payload }}"
+      },
+      "name": "DeepSeek Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2080,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v17.0/me/messages",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "EAF0f2bD8sbsBRYMfa0ZB6ULsaZAVKBYuHmrSPeOVCx3VP7V1Wq6JOnUFuMj5bTunxsYCl6i6muTNo6lHOskSMR0NwiKJZBmN0bP5JYlT5HnX5pwj1dZCQhOUzaZBmlisZASZCZBiSVYnyUXvkR9yXXML4R0we7YhGFQEy0OFD4y8ZB2nEDqegvB9xZAHZBZA9rEQZCuIyakFgkN3bSZAWSMkSfZBRM8"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ recipient: { id: $('Filter & Normalize').item.json.user_id }, message: { text: $json.choices[0].message.content.substring(0, 1000) } }) }}"
+      },
+      "name": "Instagram Send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2300,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Instagram Webhook GET": {
+      "main": [
+        [
+          {
+            "node": "Verify GET",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Webhook POST": {
+      "main": [
+        [
+          {
+            "node": "Filter & Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Normalize": {
+      "main": [
+        [
+          {
+            "node": "Intent Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Router": {
+      "main": [
+        [
+          {
+            "node": "Switch Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch Intent": {
+      "main": [
+        [
+          {
+            "node": "Extract Vehicle Entity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Stock SQL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare General",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Vehicle Entity": {
+      "main": [
+        [
+          {
+            "node": "Build Fitment SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Fitment SQL": {
+      "main": [
+        [
+          {
+            "node": "Query Fitment DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Fitment DB": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Stock SQL": {
+      "main": [
+        [
+          {
+            "node": "Query Stock DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Stock DB": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "Prepare DeepSeek Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare General": {
+      "main": [
+        [
+          {
+            "node": "Prepare DeepSeek Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare DeepSeek Request": {
+      "main": [
+        [
+          {
+            "node": "DeepSeek Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Agent": {
+      "main": [
+        [
+          {
+            "node": "Instagram Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {}
+}

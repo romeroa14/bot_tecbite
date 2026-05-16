@@ -7,6 +7,20 @@
         "@modelcontextprotocol/server-postgres",
         "postgresql://postgres:Tecbite20%24@n8n.yavingos.com:5433/n8ntecbite_db"
       ]
+    },
+    "engram": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@engramhq/engram-mcp"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
     }
   }
 }

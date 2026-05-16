@@ -1,7 +1,7 @@
 """Reusable SQL helpers for n8n PostgreSQL query nodes."""
 
 SQL_UPSERT_INSTAGRAM_STATE = """
--- Upsert state by conversation_id.
+-- Upsert state by conversation_id with campaign-aware columns.
 -- Params:
 --   $1 => conversation_id
 --   $2 => user_id
@@ -12,6 +12,9 @@ SQL_UPSERT_INSTAGRAM_STATE = """
 --   $7 => category
 --   $8 => slots_complete
 --   $9 => last_message_id
+--   $10 => campaign_id
+--   $11 => ad_id
+--   $12 => product_tag
 INSERT INTO instagram_conversation_state (
     conversation_id,
     user_id,
@@ -22,6 +25,9 @@ INSERT INTO instagram_conversation_state (
     category,
     slots_complete,
     last_message_id,
+    campaign_id,
+    ad_id,
+    product_tag,
     updated_at
 ) VALUES (
     $1,
@@ -33,6 +39,9 @@ INSERT INTO instagram_conversation_state (
     NULLIF($7, ''),
     COALESCE($8::boolean, FALSE),
     NULLIF($9, ''),
+    NULLIF($10, ''),
+    NULLIF($11, ''),
+    NULLIF($12, ''),
     NOW()
 )
 ON CONFLICT (conversation_id) DO UPDATE
@@ -45,6 +54,9 @@ SET
     category = COALESCE(EXCLUDED.category, instagram_conversation_state.category),
     slots_complete = EXCLUDED.slots_complete,
     last_message_id = EXCLUDED.last_message_id,
+    campaign_id = COALESCE(EXCLUDED.campaign_id, instagram_conversation_state.campaign_id),
+    ad_id = COALESCE(EXCLUDED.ad_id, instagram_conversation_state.ad_id),
+    product_tag = COALESCE(EXCLUDED.product_tag, instagram_conversation_state.product_tag),
     updated_at = NOW()
 RETURNING *;
 """.strip()
@@ -246,6 +258,36 @@ ORDER BY e.embedding <=> CAST($1 AS vector) ASC
 LIMIT $3::int;
 """.strip()
 
+SQL_INSTAGRAM_CONVERSATION_MEMORY = """
+-- Retrieve last 5 conversational events (inbound, recommendation, handoff)
+-- for injection into LLM formatter prompt context.
+-- Params:
+--   $1 => conversation_id
+SELECT
+    event_type,
+    payload->>'text' AS content,
+    created_at
+FROM instagram_conversation_event
+WHERE conversation_id = $1
+  AND event_type IN ('inbound', 'recommendation', 'handoff')
+ORDER BY created_at DESC
+LIMIT 5;
+""".strip()
+
+SQL_IMAGE_URL_LOOKUP = """
+-- Resolve product image URL from the latest active catalog snapshot.
+-- Params:
+--   $1 => product_sku
+SELECT
+    ps.listing_url AS image_url
+FROM tecbite_product_state ps
+JOIN tecbite_catalog_snapshot s ON s.snapshot_id = ps.snapshot_id
+WHERE LOWER(ps.product_sku) = LOWER($1)
+  AND s.status IN ('success', 'partial')
+ORDER BY s.snapshot_at DESC
+LIMIT 1;
+""".strip()
+
 SQL_INSTAGRAM_DAILY_KPI_REPORT = """
 -- Daily Instagram-first KPI rollup for MVP observability.
 -- Includes slot completion, fitment precision, technical no-source ratio, and p95 technical latency.
@@ -304,6 +346,24 @@ CROSS JOIN event_metrics e;
 """.strip()
 
 
+def validate_credentials():
+    """Validate required environment variables for Instagram agent activation.
+    Returns (ok: bool, missing: list[str]).
+    """
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    required_vars = {
+        'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY', ''),
+        'INSTAGRAM_ACCESS_TOKEN': os.getenv('INSTAGRAM_ACCESS_TOKEN', ''),
+        'INSTAGRAM_VERIFY_TOKEN': os.getenv('INSTAGRAM_VERIFY_TOKEN', ''),
+        'DB_PASS': os.getenv('DB_PASS', ''),
+    }
+    missing = [name for name, val in required_vars.items() if not val]
+    return len(missing) == 0, missing
+
+
 def get_sql_helper_queries():
     return {
         'upsert_state': SQL_UPSERT_INSTAGRAM_STATE,
@@ -316,4 +376,6 @@ def get_sql_helper_queries():
         'thule_pgvector_retrieval': SQL_THULE_PGVECTOR_RETRIEVAL,
         'thule_chunks_source_thule_com_locale_es_pa': SQL_THULE_ES_PA_CHUNKS,
         'instagram_daily_kpi_report': SQL_INSTAGRAM_DAILY_KPI_REPORT,
+        'conversation_memory': SQL_INSTAGRAM_CONVERSATION_MEMORY,
+        'image_url_lookup': SQL_IMAGE_URL_LOOKUP,
     }
