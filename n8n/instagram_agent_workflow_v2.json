@@ -1,0 +1,231 @@
+{
+  "name": "Tecbite AI Agent v2 - Tools Agent (OpenAI)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "instagram-webhook-v2",
+        "options": { "responseMode": "lastNode" }
+      },
+      "name": "Instagram Webhook GET",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "const q = $json.query || {};\nif (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === 'instagram-webhook') {\n  return [{ json: { challenge: q['hub.challenge'] } }];\n}\nreturn [{ json: { error: 'invalid token' } }];"
+      },
+      "name": "Verify GET",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "instagram-webhook-v2",
+        "options": {}
+      },
+      "name": "Instagram Webhook POST",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || {};\nconst messaging = body.entry?.[0]?.messaging?.[0] || {};\nif (messaging.is_echo === true) return [];\nconst text = (messaging.message?.text || '').trim();\nif (!text) return [];\n\nconst referral = messaging.referral || {};\nconst adRef = (referral.ref || '').trim();\nconst adId  = (referral.ad_id || '').trim();\nconst adSource = (referral.source || '').trim();\n\nreturn [{ json: {\n  user_id: messaging.sender?.id || null,\n  message_text: text,\n  ad_ref: adRef,\n  ad_id: adId,\n  ad_source: adSource,\n  session_key: messaging.sender?.id || 'anon'\n} }];"
+      },
+      "name": "Filter & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 500]
+    },
+    {
+      "parameters": {
+        "agent": "toolsAgent",
+        "promptType": "define",
+        "text": "={{ $json.message_text }}{{ $json.ad_ref ? '\\n\\n[CONTEXTO DEL ANUNCIO]\\nad_ref: ' + $json.ad_ref + ($json.ad_id ? '\\nad_id: ' + $json.ad_id : '') : '' }}",
+        "options": {
+          "maxIterations": 5,
+          "returnIntermediateSteps": false,
+          "systemMessage": "Eres el asesor virtual de Tecbite Panamá, especialista en accesorios Thule, WeatherTech y CURT. Respondes por Instagram DM en español de Panamá.\n\n## REGLA INVIOLABLE\nTu conocimiento de productos Thule/WeatherTech/CURT está DESACTUALIZADO. NUNCA menciones un producto específico (modelo, precio, compatibilidad) sin haber consultado ANTES una tool. Productos como 'Thule EasyFold XT', 'Thule VeloSpace', 'Thule HoldUp' — NO los menciones a menos que aparezcan literalmente en el resultado de una tool.\n\n## CUÁNDO LLAMAR CADA TOOL\n- decode_ad_ref: SIEMPRE que llegue ad_ref en el contexto.\n- search_vehicle_fitment: cuando mencionen marca + modelo de vehículo.\n- search_attributes_jsonb: cuando search_vehicle_fitment no encuentre data, O cuando el año sea ≥ 2015 (busca en title Y attributes).\n- search_products_by_brand: para precio/stock genérico de una marca, sin vehículo.\n- vector_search_docs: para preguntas descriptivas (cómo se instala, soporta e-bike, es resistente).\n\n## FLUJO TÍPICO\n1. Si hay ad_ref → llama decode_ad_ref primero.\n2. Si mencionan vehículo → llama search_attributes_jsonb (más completo).\n3. Si no encuentra → search_vehicle_fitment como fallback.\n4. Genera la respuesta final con los datos REALES devueltos.\n\n## CUANDO NO HAY DATA EXACTA\nDi la verdad. Ejemplo: 'Tengo registrados productos para Mitsubishi Montero Sport 2016+. Para tu 2023 te recomiendo escribir al WhatsApp 6995-1274.' Igual ofrece los productos relacionados.\n\n## ESTILO\n- Máximo 3 párrafos cortos.\n- Lista productos: '🔹 *Título exacto* — $precio (stock_status)'\n- Solo SKUs/precios LITERALES de la tool.\n- Si hay promo: '🔥 *PROMO*: ...'\n- Cierra: '¿Te ayudo con algo más? También puedes escribirme al WhatsApp 6995-1274.'\n\n## REGLA DE VEHÍCULO\nFitment SIN marca/modelo/año → pide los datos antes de llamar tools.\nPrecio/stock genérico → llama tool directo sin pedir vehículo."
+        }
+      },
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [600, 500]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {
+          "temperature": 0,
+          "maxTokens": 1000
+        }
+      },
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [560, 740],
+      "credentials": {
+        "openAiApi": { "name": "OpenAI API" }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Filter & Normalize').item.json.session_key }}",
+        "contextWindowLength": 6
+      },
+      "name": "Window Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [720, 740]
+    },
+    {
+      "parameters": {
+        "name": "decode_ad_ref",
+        "description": "Decodifica un parámetro ad_ref del anuncio de Instagram con formato VENDOR-CATEGORY-MODEL-YEAR-PRICE. Llámalo SIEMPRE que en el contexto haya ad_ref. Input: { \"ad_ref\": \"string\" }. Output: { decoded, vendor, category, vehicle_model, year, price, hint }",
+        "workflowId": { "__rl": true, "mode": "list", "value": "" },
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"ad_ref\": { \"type\": \"string\", \"description\": \"valor literal del campo referral.ref del webhook\" }\n  },\n  \"required\": [\"ad_ref\"]\n}"
+      },
+      "name": "Tool: decode_ad_ref",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.3,
+      "position": [880, 740]
+    },
+    {
+      "parameters": {
+        "name": "search_vehicle_fitment",
+        "description": "Busca productos compatibles con un vehículo específico en la tabla vehicles + vehicle_product_fitment. Hace fallback fuzzy ±3 años. Input: { \"brand\": \"string\", \"model\": \"string\", \"year\": number }. Output: { found, match_type, count, results: [{ vehicle, sku, product, category, price, stock, promo, notes }] }",
+        "workflowId": { "__rl": true, "mode": "list", "value": "" },
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"brand\": { \"type\": \"string\", \"description\": \"marca del vehículo, ej: Mitsubishi\" },\n    \"model\": { \"type\": \"string\", \"description\": \"modelo, ej: Montero Sport\" },\n    \"year\": { \"type\": \"integer\", \"description\": \"año del vehículo\" }\n  },\n  \"required\": [\"brand\", \"model\", \"year\"]\n}"
+      },
+      "name": "Tool: search_vehicle_fitment",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.3,
+      "position": [1040, 740]
+    },
+    {
+      "parameters": {
+        "name": "search_attributes_jsonb",
+        "description": "Busca productos en tecbite_product_state cuya compatibilidad vehicular vive en el campo title o attributes JSONB. ÚSALO cuando search_vehicle_fitment no encuentre data, O cuando el año del vehículo sea reciente (>=2015). Input: { \"brand\": \"string\", \"model\": \"string\" }. Output: { found, count, results: [{ sku, title, brand, category, price, stock, promo, matched_compat }] }",
+        "workflowId": { "__rl": true, "mode": "list", "value": "" },
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"brand\": { \"type\": \"string\", \"description\": \"marca del vehículo, ej: Mitsubishi\" },\n    \"model\": { \"type\": \"string\", \"description\": \"modelo, ej: Montero Sport\" },\n    \"year\": { \"type\": \"integer\", \"description\": \"año (opcional)\" }\n  },\n  \"required\": [\"brand\"]\n}"
+      },
+      "name": "Tool: search_attributes_jsonb",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.3,
+      "position": [1200, 740]
+    },
+    {
+      "parameters": {
+        "name": "search_products_by_brand",
+        "description": "Lista productos activos de una marca (Thule, WeatherTech, CURT) en tecbite_product_state, opcionalmente filtrado por categoría. ÚSALO para preguntas de stock/precio genéricas SIN vehículo. Input: { \"brand\": \"string\", \"category\": \"string\" }. Output: { found, count, results: [{ sku, title, brand, category, price, stock, promo }] }",
+        "workflowId": { "__rl": true, "mode": "list", "value": "" },
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"brand\": { \"type\": \"string\", \"description\": \"Thule, WeatherTech o CURT\" },\n    \"category\": { \"type\": \"string\", \"description\": \"categoría opcional, ej: hitch, floorliner, bike rack\" },\n    \"limit\": { \"type\": \"integer\", \"description\": \"max resultados, default 10\" }\n  },\n  \"required\": [\"brand\"]\n}"
+      },
+      "name": "Tool: search_products_by_brand",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.3,
+      "position": [1360, 740]
+    },
+    {
+      "parameters": {
+        "name": "vector_search_docs",
+        "description": "Búsqueda semántica en la base de documentos de Thule/WeatherTech (pgvector). ÚSALO para preguntas descriptivas como '¿es resistente?', '¿cómo se instala?', '¿soporta e-bike?'. Input: { \"query\": \"string\" }. Output: { found, count, results: [{ similarity, vendor, title, category, url, text }] }",
+        "workflowId": { "__rl": true, "mode": "list", "value": "" },
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"query\": { \"type\": \"string\", \"description\": \"pregunta del cliente en lenguaje natural\" },\n    \"top_k\": { \"type\": \"integer\", \"description\": \"max resultados, default 5\" },\n    \"vendor\": { \"type\": \"string\", \"description\": \"filtro opcional: thule, weathertech\" }\n  },\n  \"required\": [\"query\"]\n}"
+      },
+      "name": "Tool: vector_search_docs",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.3,
+      "position": [1520, 740]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v17.0/me/messages",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "EAF0f2bD8sbsBRYMfa0ZB6ULsaZAVKBYuHmrSPeOVCx3VP7V1Wq6JOnUFuMj5bTunxsYCl6i6muTNo6lHOskSMR0NwiKJZBmN0bP5JYlT5HnX5pwj1dZCQhOUzaZBmlisZASZCZBiSVYnyUXvkR9yXXML4R0we7YhGFQEy0OFD4y8ZB2nEDqegvB9xZAHZBZA9rEQZCuIyakFgkN3bSZAWSMkSfZBRM8"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({ recipient: { id: $('Filter & Normalize').item.json.user_id }, message: { text: ($json.output || $json.text || '').substring(0, 1000) } }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "name": "Instagram Send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 500]
+    }
+  ],
+  "connections": {
+    "Instagram Webhook GET": {
+      "main": [[{ "node": "Verify GET", "type": "main", "index": 0 }]]
+    },
+    "Instagram Webhook POST": {
+      "main": [[{ "node": "Filter & Normalize", "type": "main", "index": 0 }]]
+    },
+    "Filter & Normalize": {
+      "main": [[{ "node": "AI Agent", "type": "main", "index": 0 }]]
+    },
+    "AI Agent": {
+      "main": [[{ "node": "Instagram Send", "type": "main", "index": 0 }]]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [[{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Window Memory": {
+      "ai_memory": [[{ "node": "AI Agent", "type": "ai_memory", "index": 0 }]]
+    },
+    "Tool: decode_ad_ref": {
+      "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Tool: search_vehicle_fitment": {
+      "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Tool: search_attributes_jsonb": {
+      "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Tool: search_products_by_brand": {
+      "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]]
+    },
+    "Tool: vector_search_docs": {
+      "ai_tool": [[{ "node": "AI Agent", "type": "ai_tool", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {}
+}

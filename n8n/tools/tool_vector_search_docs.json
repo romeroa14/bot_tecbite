@@ -1,0 +1,79 @@
+{
+  "name": "Tool - vector_search_docs",
+  "nodes": [
+    {
+      "parameters": { "inputSource": "passthrough" },
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json || {};\nconst query = (raw.query || '').trim();\nconst topK = Math.min(parseInt(raw.top_k, 10) || 5, 10);\nconst vendor = (raw.vendor || '').trim();\nif (!query) {\n  return [{ json: { error: 'query es requerido', skip: true } }];\n}\nreturn [{ json: { query, topK, vendor } }];"
+      },
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/embeddings",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', prompt: $json.query }) }}",
+        "options": {}
+      },
+      "name": "Ollama Embed Query",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const emb = $json.embedding;\nif (!Array.isArray(emb) || emb.length !== 768) {\n  return [{ json: { error: `embedding inválido (len=${emb ? emb.length : 0})`, skip: true } }];\n}\nconst literal = '[' + emb.join(',') + ']';\nconst orig = $('Normalize Input').first().json;\nreturn [{ json: { vector_literal: literal, topK: orig.topK, vendor: orig.vendor, query: orig.query } }];"
+      },
+      "name": "Build Vector Literal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT vdc.chunk_text, vd.source_url, vd.title, vd.category_hint, vd.vendor,\n       1 - (vde.embedding <=> $1::vector) AS similarity\n  FROM vendor_document_embedding vde\n  JOIN vendor_document_chunk vdc ON vdc.chunk_id = vde.chunk_id\n  JOIN vendor_document vd ON vd.doc_id = vdc.doc_id\n WHERE vd.is_active = true\n   AND ($2 = '' OR vd.vendor ILIKE $2)\n ORDER BY vde.embedding <=> $1::vector\n LIMIT $3::int;",
+        "options": {
+          "queryReplacement": "={{ $json.vector_literal }},={{ $json.vendor }},={{ $json.topK }}"
+        }
+      },
+      "name": "pgvector Search",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1080, 300],
+      "credentials": {
+        "postgres": { "name": "Tecbite Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `Sin documentos relevantes para '${input.query}'.`, query: input.query } }];\n}\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  query: input.query,\n  results: rows.map(r => ({\n    similarity: Number(r.similarity).toFixed(3),\n    vendor: r.vendor,\n    title: r.title,\n    category: r.category_hint,\n    url: r.source_url,\n    text: r.chunk_text.substring(0, 500)\n  }))\n} }];"
+      },
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": { "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]] },
+    "Normalize Input": { "main": [[{ "node": "Ollama Embed Query", "type": "main", "index": 0 }]] },
+    "Ollama Embed Query": { "main": [[{ "node": "Build Vector Literal", "type": "main", "index": 0 }]] },
+    "Build Vector Literal": { "main": [[{ "node": "pgvector Search", "type": "main", "index": 0 }]] },
+    "pgvector Search": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {},
+  "id": "tool-vector-search-docs"
+}

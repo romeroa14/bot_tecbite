@@ -1,0 +1,62 @@
+{
+  "name": "Tool - search_vehicle_fitment",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normaliza parámetros del agente. Acepta brand, model, year.\nconst raw = $input.first().json || {};\nconst brand = (raw.brand || '').trim();\nconst model = (raw.model || '').trim();\nconst year  = parseInt(raw.year, 10) || null;\n\n// Estrategia: match exacto primero, luego fallback con rango ±3 años\nreturn [{ json: { brand, model, year, year_lo: year ? year - 3 : null, year_hi: year ? year + 3 : null } }];"
+      },
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH exact_match AS (\n  SELECT v.brand AS vehicle_brand, v.model AS vehicle_model,\n         v.year_start, v.year_end, v.roof_type,\n         p.sku AS fitment_sku, p.name AS product_name, p.category AS product_category,\n         fmap.store_product_code,\n         tps.title AS store_title, tps.price_amount, tps.currency, tps.stock_status, tps.promo_text,\n         vpf.fitment_notes, vpf.pad_type,\n         'exact' AS match_type\n  FROM vehicles v\n  JOIN vehicle_product_fitment vpf ON vpf.vehicle_id = v.id\n  JOIN products p ON p.sku = vpf.product_sku\n  LEFT JOIN fitment_store_sku_map fmap ON fmap.fitment_sku = p.sku\n  LEFT JOIN tecbite_product_state tps ON tps.product_sku = fmap.store_product_code AND tps.is_active = true\n  WHERE vpf.is_compatible = true\n    AND ($1 = '' OR v.brand ILIKE '%' || $1 || '%')\n    AND ($2 = '' OR v.model ILIKE '%' || $2 || '%')\n    AND ($3::int IS NULL OR (v.year_start <= $3::int AND (v.year_end >= $3::int OR v.year_end IS NULL OR v.year_end >= 9999)))\n  LIMIT 6\n),\nfuzzy_match AS (\n  SELECT v.brand AS vehicle_brand, v.model AS vehicle_model,\n         v.year_start, v.year_end, v.roof_type,\n         p.sku AS fitment_sku, p.name AS product_name, p.category AS product_category,\n         fmap.store_product_code,\n         tps.title AS store_title, tps.price_amount, tps.currency, tps.stock_status, tps.promo_text,\n         vpf.fitment_notes, vpf.pad_type,\n         'fuzzy_year' AS match_type\n  FROM vehicles v\n  JOIN vehicle_product_fitment vpf ON vpf.vehicle_id = v.id\n  JOIN products p ON p.sku = vpf.product_sku\n  LEFT JOIN fitment_store_sku_map fmap ON fmap.fitment_sku = p.sku\n  LEFT JOIN tecbite_product_state tps ON tps.product_sku = fmap.store_product_code AND tps.is_active = true\n  WHERE vpf.is_compatible = true\n    AND ($1 = '' OR v.brand ILIKE '%' || $1 || '%')\n    AND ($2 = '' OR v.model ILIKE '%' || $2 || '%')\n    AND NOT EXISTS (SELECT 1 FROM exact_match)\n  LIMIT 6\n)\nSELECT * FROM exact_match\nUNION ALL\nSELECT * FROM fuzzy_match\nORDER BY price_amount ASC NULLS LAST;",
+        "options": {
+          "queryReplacement": "={{ $json.brand }},={{ $json.model }},={{ $json.year }}"
+        }
+      },
+      "name": "Query Fitment + Fallback",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [640, 300],
+      "credentials": {
+        "postgres": { "name": "Tecbite Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\n\nif (!rows.length) {\n  return [{ json: {\n    found: false,\n    message: `No se encontró fitment exacto para ${input.brand} ${input.model} ${input.year || ''}. Sugerencia: usar search_attributes_jsonb o search_products_by_brand.`,\n    query: input\n  } }];\n}\n\nconst matchType = rows[0].match_type;\nreturn [{ json: {\n  found: true,\n  match_type: matchType,\n  count: rows.length,\n  results: rows.map(r => ({\n    vehicle: `${r.vehicle_brand} ${r.vehicle_model} (${r.year_start}-${r.year_end || 'now'})`,\n    sku: r.store_product_code || r.fitment_sku,\n    product: r.store_title || r.product_name,\n    category: r.product_category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status || 'unknown',\n    promo: r.promo_text || null,\n    notes: r.fitment_notes\n  }))\n} }];"
+      },
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 300]
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Input": {
+      "main": [[{ "node": "Query Fitment + Fallback", "type": "main", "index": 0 }]]
+    },
+    "Query Fitment + Fallback": {
+      "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "tool-search-vehicle-fitment"
+}
