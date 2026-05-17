@@ -1,0 +1,199 @@
+{
+  "test_cases": [
+    {
+      "name": "GENERAL - Sin ad_ref",
+      "description": "Pregunta general sin contexto de anuncio",
+      "payload": {
+        "object": "page",
+        "entry": [
+          {
+            "id": "123456789",
+            "time": 1715908800,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "987654321"
+                },
+                "recipient": {
+                  "id": "123456789"
+                },
+                "timestamp": 1715908800,
+                "message": {
+                  "mid": "mid.123456789",
+                  "text": "Hola, ¿qué productos tienen?"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_intent": "GENERAL",
+      "expected_behavior": "El agente debe responder con información general sobre productos disponibles"
+    },
+    {
+      "name": "FITMENT - Con ad_ref",
+      "description": "Pregunta de fitment con contexto de anuncio de portabicicletas",
+      "payload": {
+        "object": "page",
+        "entry": [
+          {
+            "id": "123456789",
+            "time": 1715908800,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "987654321"
+                },
+                "recipient": {
+                  "id": "123456789"
+                },
+                "timestamp": 1715908800,
+                "referral": {
+                  "ref": "THULE-BIKE-RACK-HILUX-2024",
+                  "ad_id": "987654321",
+                  "source": "ADS"
+                },
+                "message": {
+                  "mid": "mid.123456789",
+                  "text": "Tengo un Toyota Hilux 2024, ¿qué portabicicletas me recomiendan?"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_intent": "FITMENT",
+      "expected_behavior": "El agente debe capturar vehículo (Toyota Hilux 2024) y consultar fitment DB"
+    },
+    {
+      "name": "STOCK - Con ad_ref",
+      "description": "Pregunta de precio con contexto de anuncio de portabicicletas",
+      "payload": {
+        "object": "page",
+        "entry": [
+          {
+            "id": "123456789",
+            "time": 1715908800,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "987654321"
+                },
+                "recipient": {
+                  "id": "123456789"
+                },
+                "timestamp": 1715908800,
+                "referral": {
+                  "ref": "THULE-BIKE-RACK-HILUX-2024",
+                  "ad_id": "987654321",
+                  "source": "ADS"
+                },
+                "message": {
+                  "mid": "mid.123456789",
+                  "text": "¿Cuánto cuesta?"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_intent": "STOCK",
+      "expected_behavior": "El agente debe usar ad_ref para inferir producto y consultar stock/precio"
+    },
+    {
+      "name": "STOCK - Sin ad_ref (mención de marca)",
+      "description": "Pregunta de precio sin ad_ref pero mencionando marca",
+      "payload": {
+        "object": "page",
+        "entry": [
+          {
+            "id": "123456789",
+            "time": 1715908800,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "987654321"
+                },
+                "recipient": {
+                  "id": "123456789"
+                },
+                "timestamp": 1715908800,
+                "message": {
+                  "mid": "mid.123456789",
+                  "text": "¿Cuánto cuestan los portabicicletas Thule?"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_intent": "STOCK",
+      "expected_behavior": "El agente debe filtrar por marca Thule en stock query"
+    },
+    {
+      "name": "STOCK - CURT campaña real con precio",
+      "description": "Usuario viene de campaña CURT y pregunta precio sin especificar producto",
+      "payload": {
+        "object": "page",
+        "entry": [
+          {
+            "id": "123456789",
+            "time": 1715908800,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "987654321"
+                },
+                "recipient": {
+                  "id": "123456789"
+                },
+                "timestamp": 1715908800,
+                "referral": {
+                  "ref": "CURT-HITCH-SYSTEM-199",
+                  "ad_id": "CURT-AD-001",
+                  "source": "ADS"
+                },
+                "message": {
+                  "mid": "mid.123456789",
+                  "text": "precio"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_intent": "STOCK",
+      "expected_behavior": "El agente debe usar ad_ref 'CURT-HITCH-SYSTEM-199' para inferir que pregunta por sistema de remolque CURT y responder con precio desde $199 sin preguntar qué producto"
+    },
+    {
+      "name": "FITMENT - Mitsubishi Montero Sport 2023",
+      "description": "Pregunta de fitment para vehículo específico",
+      "payload": {
+        "object": "page",
+        "entry": [
+          {
+            "id": "123456789",
+            "time": 1715908800,
+            "messaging": [
+              {
+                "sender": {
+                  "id": "987654321"
+                },
+                "recipient": {
+                  "id": "123456789"
+                },
+                "timestamp": 1715908800,
+                "message": {
+                  "mid": "mid.123456789",
+                  "text": "Hola para mitsubishi montero sport 2023 tienen"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "expected_intent": "FITMENT",
+      "expected_behavior": "El agente debe detectar vehículo (Mitsubishi Montero Sport 2023), consultar fitment DB y mostrar productos compatibles"
+    }
+  ]
+}

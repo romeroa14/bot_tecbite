@@ -175,7 +175,7 @@ def build_category_url(path: str, page: int = 1, limit: int = PRODUCTS_PER_PAGE)
 
 def build_db_url() -> str:
     return (
-        f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
+        f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}"
         f"@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
     )
 

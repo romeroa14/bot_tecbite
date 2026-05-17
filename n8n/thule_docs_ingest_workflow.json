@@ -28,7 +28,7 @@
           "string": [
             {
               "name": "seed_url_arg",
-              "value": "--seed-url https://www.thule.com/es-pa/"
+              "value": ""
             },
             {
               "name": "dry_run_arg",
@@ -36,6 +36,14 @@
             },
             {
               "name": "max_pages_arg",
+              "value": "--max-pages 200"
+            },
+            {
+              "name": "chunk_words_arg",
+              "value": "--chunk-words 180"
+            },
+            {
+              "name": "skip_embeddings_arg",
               "value": ""
             }
           ]
@@ -48,11 +56,11 @@
         480,
         120
       ],
-      "notes": "Set `dry_run_arg` to `--dry-run` and optional `max_pages_arg` (e.g. `--max-pages 40`) for controlled runs."
+      "notes": "Set `dry_run_arg` to `--dry-run` for safe runs. `skip_embeddings_arg` to `--skip-embeddings` if Ollama is unavailable."
     },
     {
       "parameters": {
-        "command": "=python3 /var/www/html/tecbite/scripts/thule_docs_ingest.py {{$json.seed_url_arg || ''}} {{$json.max_pages_arg || ''}} {{$json.dry_run_arg || ''}}"
+        "command": "=source /var/www/html/tecbite/scripts/.venv/bin/activate && python /var/www/html/tecbite/scripts/thule_docs_ingest.py {{$json.seed_url_arg || ''}} {{$json.max_pages_arg || ''}} {{$json.chunk_words_arg || ''}} {{$json.skip_embeddings_arg || ''}} {{$json.dry_run_arg || ''}}"
       },
       "name": "Run Thule Docs Ingest",
       "type": "n8n-nodes-base.executeCommand",

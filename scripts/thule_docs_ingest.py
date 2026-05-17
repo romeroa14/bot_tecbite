@@ -14,6 +14,12 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:  # noqa: BLE001
+    pass
 try:
     from sqlalchemy import create_engine, text
     from sqlalchemy.exc import SQLAlchemyError
@@ -24,22 +30,45 @@ except Exception:  # noqa: BLE001
     class SQLAlchemyError(Exception):
         """Fallback SQLAlchemy error type when dependency is missing."""
 
-try:
-    from openai import OpenAI
-except Exception:  # noqa: BLE001
-    OpenAI = None  # type: ignore[assignment]
-
-
-SEED_URLS = ("https://www.thule.com/es-pa/",)
+VENDOR = "thule"
+SEED_URLS = (
+    "https://www.thule.com/es-pa/bike-rack",
+    "https://www.thule.com/es-pa/cargo-carrier",
+    "https://www.thule.com/es-pa/roof-rack",
+    "https://www.thule.com/es-pa/luggage",
+    "https://www.thule.com/es-pa/water-sport",
+    "https://www.thule.com/es-pa/child-bike-seats",
+    "https://www.thule.com/es-pa/strollers",
+)
 ALLOWED_HOST = "www.thule.com"
 ALLOWED_PATH_PREFIX = "/es-pa/"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_RETRIES = 3
 DEFAULT_BACKOFF_SECONDS = (2, 8, 20)
-DEFAULT_MAX_PAGES = 30
+DEFAULT_MAX_PAGES = 200
 DEFAULT_CHUNK_WORDS = 180
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_LOCALE = "es-PA"
+
+# Heuristic para inferir category_hint del path de la URL
+CATEGORY_HINTS = {
+    "bike-rack": "bike-rack",
+    "roof-rack": "roof-rack",
+    "cargo-carrier": "cargo-carrier",
+    "car-top-carrier": "cargo-carrier",
+    "luggage": "luggage",
+    "sport-rack": "sport-rack",
+    "water-sport": "water-sport",
+    "child-bike-seats": "child-bike-seats",
+    "strollers": "strollers",
+    "about-thule": "about",
+    "careers": "about",
+    "sustainability": "about",
+    "warranty": "about",
+    "activities": "activities",
+    "articles": "articles",
+}
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 ThuleDocsIngest/1.0"
@@ -52,6 +81,10 @@ CONTENT_SELECTORS = (
     "[role='main']",
     ".rich-text",
     ".content",
+    ".product-description",
+    ".product-specifications",
+    ".article-content",
+    ".techspec",
 )
 REMOVABLE_SELECTORS = (
     "script",
@@ -61,6 +94,11 @@ REMOVABLE_SELECTORS = (
     "footer",
     "nav",
     ".breadcrumb",
+    ".filter",
+    ".sorting",
+    ".geo-location",
+    ".country-selector",
+    ".language-selector",
 )
 
 
@@ -116,15 +154,95 @@ def token_estimate(text_value: str) -> int:
     return max(1, len(text_value.split()))
 
 
-def chunk_text_blocks(text_value: str, chunk_words: int) -> List[str]:
-    words = text_value.split()
+def calculate_information_density(text_value: str) -> float:
+    """
+    Calcula densidad de información como ratio de palabras únicas vs total.
+    Valores bajos indican contenido repetitivo o de baja calidad.
+    """
+    words = text_value.lower().split()
     if not words:
+        return 0.0
+    unique_words = set(words)
+    return len(unique_words) / len(words)
+
+
+def is_low_quality_chunk(chunk_text: str) -> bool:
+    """
+    Filtra chunks de baja calidad:
+    - Menos de 30 tokens
+    - Densidad de información < 0.3 (muy repetitivo)
+    - Contiene principalmente palabras de navegación
+    """
+    if len(chunk_text.strip()) < 50:
+        return True
+    
+    word_count = len(chunk_text.split())
+    if word_count < 30:
+        return True
+    
+    density = calculate_information_density(chunk_text)
+    if density < 0.3:
+        return True
+    
+    # Palabras de navegación comunes que indican ruido
+    nav_keywords = ['filtro', 'ordenar', 'precio', 'destacado', 'nuevo', 'mayor', 'menor', 'seleccionar', 'país', 'región', 'venezuela', 'spanish', 'close', 'filter', 'show', 'hide', 'collapse', 'expand']
+    nav_count = sum(1 for word in chunk_text.lower().split() if word in nav_keywords)
+    if nav_count > word_count * 0.3:  # Más del 30% son palabras de navegación
+        return True
+    
+    return False
+
+
+def chunk_text_blocks(text_value: str, chunk_words: int) -> List[str]:
+    """
+    Chunking inteligente por delimitadores semánticos (párrafos, secciones)
+    en lugar de palabras fijas. Prioriza párrafos completos y respeta límites de tokens.
+    """
+    if not text_value:
         return []
+    
+    # Dividir por párrafos primero (doble salto de línea)
+    paragraphs = [p.strip() for p in text_value.split('\n\n') if p.strip()]
+    
     chunks: List[str] = []
-    for idx in range(0, len(words), chunk_words):
-        segment = " ".join(words[idx : idx + chunk_words]).strip()
-        if segment:
-            chunks.append(segment)
+    current_chunk: List[str] = []
+    current_word_count = 0
+    
+    for para in paragraphs:
+        para_words = para.split()
+        para_word_count = len(para_words)
+        
+        # Si el párrafo es muy largo (> chunk_words), dividirlo por oraciones
+        if para_word_count > chunk_words:
+            sentences = [s.strip() for s in para.split('.') if s.strip()]
+            for sent in sentences:
+                sent_words = sent.split()
+                sent_word_count = len(sent_words)
+                
+                # Si agregar esta oración excede el límite, guardar chunk actual
+                if current_word_count + sent_word_count > chunk_words and current_chunk:
+                    chunks.append(' '.join(current_chunk))
+                    current_chunk = []
+                    current_word_count = 0
+                
+                if sent_words:
+                    current_chunk.append(sent)
+                    current_word_count += sent_word_count
+        else:
+            # Si agregar este párrafo excede el límite, guardar chunk actual
+            if current_word_count + para_word_count > chunk_words and current_chunk:
+                chunks.append(' '.join(current_chunk))
+                current_chunk = []
+                current_word_count = 0
+            
+            if para_words:
+                current_chunk.append(para)
+                current_word_count += para_word_count
+    
+    # Agregar el último chunk si tiene contenido
+    if current_chunk:
+        chunks.append(' '.join(current_chunk))
+    
     return chunks
 
 
@@ -141,22 +259,40 @@ def vector_literal(values: List[float]) -> str:
     return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
 
 
+def infer_category_hint(url: str) -> Optional[str]:
+    path = urlparse(url).path.lower()
+    for keyword, hint in CATEGORY_HINTS.items():
+        if keyword in path:
+            return hint
+    return None
+
+
 class ThuleDocsIngestor:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.logger = logging.getLogger("thule_docs_ingest")
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": USER_AGENT})
-        self.openai_client = self._build_openai_client()
+        self.ollama_url = args.ollama_url.rstrip("/")
+        self.embeddings_enabled = self._ping_ollama()
 
-    def _build_openai_client(self):
-        if not os.getenv("OPENAI_API_KEY"):
-            self.logger.info("OPENAI_API_KEY not found; embeddings will be skipped.")
-            return None
-        if OpenAI is None:
-            self.logger.warning("openai package unavailable; embeddings will be skipped.")
-            return None
-        return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    def _ping_ollama(self) -> bool:
+        if self.args.skip_embeddings:
+            self.logger.info("--skip-embeddings set; embeddings disabled.")
+            return False
+        try:
+            r = self.session.get(f"{self.ollama_url}/api/tags", timeout=5)
+            if r.status_code == 200:
+                self.logger.info("Ollama OK at %s", self.ollama_url)
+                return True
+            self.logger.warning("Ollama responded %s; embeddings disabled", r.status_code)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                "Ollama unreachable at %s (%s); chunks will be ingested WITHOUT embeddings.",
+                self.ollama_url, exc,
+            )
+            return False
 
     def fetch(self, url: str) -> requests.Response:
         last_error: Optional[Exception] = None
@@ -261,35 +397,44 @@ class ThuleDocsIngestor:
             title = normalize_space(title_node.get_text(" ", strip=True)) if title_node else None
             content_sha = sha256_text(text_content)
             chunks = self.build_chunks(current, text_content)
-            documents.append(
-                DocumentRecord(
-                    doc_id=str(uuid.uuid4()),
-                    source_url=response.url,
-                    locale=DEFAULT_LOCALE,
-                    title=title,
-                    content_sha256=content_sha,
-                    etag=response.headers.get("ETag"),
-                    last_modified=response.headers.get("Last-Modified"),
-                    fetched_at=datetime.now(timezone.utc),
-                    status_code=response.status_code,
-                    text_content=text_content,
-                    chunks=chunks,
-                )
+            doc = DocumentRecord(
+                doc_id=str(uuid.uuid4()),
+                source_url=response.url,
+                locale=DEFAULT_LOCALE,
+                title=title,
+                content_sha256=content_sha,
+                etag=response.headers.get("ETag"),
+                last_modified=response.headers.get("Last-Modified"),
+                fetched_at=datetime.now(timezone.utc),
+                status_code=response.status_code,
+                text_content=text_content,
+                chunks=chunks,
             )
+            doc.category_hint = infer_category_hint(response.url)
+            documents.append(doc)
             self.logger.info(
-                "Captured %s (%s chunks)", response.url, len(chunks)
+                "Captured %s [%s] (%s chunks)", response.url, doc.category_hint or "-", len(chunks)
             )
         return documents
 
     def build_chunks(self, source_url: str, text_content: str) -> List[DocumentChunk]:
         chunk_texts = chunk_text_blocks(text_content, self.args.chunk_words)
         chunks: List[DocumentChunk] = []
+        filtered_count = 0
         for idx, chunk in enumerate(chunk_texts, start=1):
+            # Filtrar chunks de baja calidad
+            if is_low_quality_chunk(chunk):
+                filtered_count += 1
+                self.logger.debug("Filtered low-quality chunk %s from %s", idx, source_url)
+                continue
+            
             metadata = {
+                "vendor": VENDOR,
                 "source": "thule.com",
                 "locale": DEFAULT_LOCALE,
                 "source_url": source_url,
                 "source_ref": f"{source_url}#chunk-{idx}",
+                "category_hint": infer_category_hint(source_url) or "",
             }
             chunks.append(
                 DocumentChunk(
@@ -300,19 +445,31 @@ class ThuleDocsIngestor:
                     metadata=metadata,
                 )
             )
+        if filtered_count > 0:
+            self.logger.info("Filtered %s low-quality chunks from %s", filtered_count, source_url)
         return chunks
 
     def embed_text(self, text_value: str) -> Optional[List[float]]:
-        if self.openai_client is None:
+        if not self.embeddings_enabled:
             return None
         try:
-            response = self.openai_client.embeddings.create(
-                model=self.args.embedding_model,
-                input=text_value,
+            r = self.session.post(
+                f"{self.ollama_url}/api/embeddings",
+                json={"model": self.args.embedding_model, "prompt": text_value},
+                timeout=30,
             )
-            return list(response.data[0].embedding)
+            r.raise_for_status()
+            data = r.json()
+            embedding = data.get("embedding")
+            if not embedding or len(embedding) != 768:
+                self.logger.warning(
+                    "Unexpected embedding from Ollama (len=%s); skipping",
+                    len(embedding) if embedding else 0,
+                )
+                return None
+            return embedding
         except Exception as exc:  # noqa: BLE001
-            self.logger.warning("Embedding generation failed; skipping chunk: %s", exc)
+            self.logger.warning("Ollama embedding failed; skipping chunk: %s", exc)
             return None
 
     def persist(self, documents: List[DocumentRecord]) -> None:
@@ -334,27 +491,33 @@ class ThuleDocsIngestor:
         try:
             with engine.begin() as conn:
                 for doc in documents:
+                    source_host = urlparse(doc.source_url).netloc
+                    category_hint = getattr(doc, "category_hint", None) or infer_category_hint(doc.source_url)
                     conn.execute(
                         text(
                             """
-                            INSERT INTO thule_document (
-                                doc_id, source_url, locale, title, content_sha256,
-                                etag, last_modified, fetched_at, status_code, is_active
+                            INSERT INTO vendor_document (
+                                doc_id, vendor, source_url, source_host, locale, title, category_hint,
+                                content_sha256, etag, last_modified, fetched_at, status_code, is_active
                             ) VALUES (
-                                :doc_id, :source_url, :locale, :title, :content_sha256,
-                                :etag, :last_modified, :fetched_at, :status_code, TRUE
+                                :doc_id, :vendor, :source_url, :source_host, :locale, :title, :category_hint,
+                                :content_sha256, :etag, :last_modified, :fetched_at, :status_code, TRUE
                             )
                             ON CONFLICT (source_url, content_sha256) DO UPDATE
                             SET fetched_at = EXCLUDED.fetched_at,
                                 status_code = EXCLUDED.status_code,
+                                category_hint = EXCLUDED.category_hint,
                                 is_active = TRUE
                             """
                         ),
                         {
                             "doc_id": doc.doc_id,
+                            "vendor": VENDOR,
                             "source_url": doc.source_url,
+                            "source_host": source_host,
                             "locale": doc.locale,
                             "title": doc.title,
+                            "category_hint": category_hint,
                             "content_sha256": doc.content_sha256,
                             "etag": doc.etag,
                             "last_modified": doc.last_modified,
@@ -367,7 +530,7 @@ class ThuleDocsIngestor:
                         inserted_chunk = conn.execute(
                             text(
                                 """
-                                INSERT INTO thule_document_chunk (
+                                INSERT INTO vendor_document_chunk (
                                     doc_id, chunk_no, chunk_text, token_count, chunk_sha256, metadata
                                 ) VALUES (
                                     :doc_id, :chunk_no, :chunk_text, :token_count, :chunk_sha256, CAST(:metadata AS jsonb)
@@ -395,7 +558,7 @@ class ThuleDocsIngestor:
                         conn.execute(
                             text(
                                 """
-                                INSERT INTO thule_document_embedding (
+                                INSERT INTO vendor_document_embedding (
                                     chunk_id, embedding, embedding_model, embedded_at
                                 ) VALUES (
                                     :chunk_id, CAST(:embedding_literal AS vector), :embedding_model, :embedded_at
@@ -444,7 +607,17 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--embedding-model",
         default=DEFAULT_EMBEDDING_MODEL,
-        help="OpenAI embedding model when OPENAI_API_KEY is configured.",
+        help="Ollama embedding model (default: nomic-embed-text, 768 dims).",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        default=DEFAULT_OLLAMA_URL,
+        help="Ollama base URL (default: http://n8n.yavingos.com:11434).",
+    )
+    parser.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="Ingest chunks WITHOUT embeddings (back-fill later).",
     )
     parser.add_argument(
         "--timeout",

@@ -1,0 +1,216 @@
+{
+  "name": "Tecbite Daily Stock & Price Refresh",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 4 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Schedule 04:00 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "notes": "Cron diario 04:00 UTC = 23:00 Panamá. Una sola corrida por día."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT product_sku, pdp_url FROM tecbite_product_state WHERE is_active = TRUE AND pdp_url IS NOT NULL ORDER BY ingested_at ASC NULLS FIRST;",
+        "options": {}
+      },
+      "id": "fetch-active-skus",
+      "name": "Postgres — Fetch active SKUs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": {
+          "id": "tecbite-n8n-postgres",
+          "name": "tecbite-n8n-postgres"
+        }
+      },
+      "notes": "Devuelve TODAS las URLs activas. Reemplazar por LIMIT 10 en pruebas."
+    },
+    {
+      "parameters": {
+        "batchSize": 200,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "Split In Batches (200)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.pdp_url }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (compatible; TecbiteCatalogBot/1.0)"
+            }
+          ]
+        }
+      },
+      "id": "fetch-pdp",
+      "name": "HTTP — Fetch PDP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300],
+      "onError": "continueRegularOutput",
+      "notes": "Continue On Fail activo: si una PDP falla, no rompe el lote."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.statusCode || 200 }}",
+              "rightValue": 200,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-status-ok",
+      "name": "IF — Status 200",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse PDP HTML: extrae price_amount y stock_status\nconst items = $input.all();\nconst out = [];\nconst crypto = require('crypto');\n\nfor (const item of items) {\n  const html = typeof item.json.body === 'string' ? item.json.body : (item.json.data || JSON.stringify(item.json));\n  // sku/pdp_url vienen del item PREVIO al HTTP (Split In Batches). En n8n se accede vía $('Split In Batches (200)').\n  const ctx = $('Split In Batches (200)').item.json;\n  const sku = ctx.product_sku;\n\n  // ── Precio: OpenCart usa price-new (vigente) y price-old (tachado). Tomar primera price-new.\n  const priceMatch = html.match(/class=[\"']price-new[\"'][^>]*>\\s*\\$?\\s*([\\d,]+\\.\\d{2})/i);\n  const price_amount = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null;\n\n  // ── Stock: \"Disponibilidad: <n>\"\n  let stock_status = 'discontinued';\n  const dispMatch = html.match(/Disponibilidad:\\s*([0-9]+|\\-)/i);\n  if (dispMatch) {\n    const n = parseInt(dispMatch[1], 10);\n    if (Number.isFinite(n)) {\n      stock_status = n > 0 ? 'in_stock' : 'out_of_stock';\n    }\n  }\n\n  const content_hash = crypto.createHash('sha256')\n    .update(`${sku}|${price_amount}|${stock_status}`)\n    .digest('hex');\n\n  out.push({ json: { product_sku: sku, price_amount, stock_status, content_hash } });\n}\nreturn out;"
+      },
+      "id": "parse-pdp",
+      "name": "Code — Parse PDP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 220]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE tecbite_product_state SET price_amount = $2, stock_status = $3, content_hash = $4, source_updated_at = NOW(), fresh_until = NOW() + INTERVAL '24 hours', ingested_at = NOW() WHERE product_sku = $1 AND is_active = TRUE;",
+        "options": {
+          "queryReplacement": "={{ $json.product_sku }}, {{ $json.price_amount }}, {{ $json.stock_status }}, {{ $json.content_hash }}"
+        }
+      },
+      "id": "update-state",
+      "name": "Postgres — UPDATE state",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1560, 220],
+      "credentials": {
+        "postgres": {
+          "id": "tecbite-n8n-postgres",
+          "name": "tecbite-n8n-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE tecbite_product_state SET stock_status = 'check_failed', ingested_at = NOW() WHERE product_sku = $1;",
+        "options": {
+          "queryReplacement": "={{ $('Split In Batches (200)').item.json.product_sku }}"
+        }
+      },
+      "id": "mark-failed",
+      "name": "Postgres — Mark check_failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1340, 420],
+      "credentials": {
+        "postgres": {
+          "id": "tecbite-n8n-postgres",
+          "name": "tecbite-n8n-postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 800,
+        "unit": "milliseconds"
+      },
+      "id": "throttle",
+      "name": "Wait 800ms",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1780, 300]
+    }
+  ],
+  "connections": {
+    "Schedule 04:00 UTC": {
+      "main": [[{ "node": "Postgres — Fetch active SKUs", "type": "main", "index": 0 }]]
+    },
+    "Postgres — Fetch active SKUs": {
+      "main": [[{ "node": "Split In Batches (200)", "type": "main", "index": 0 }]]
+    },
+    "Split In Batches (200)": {
+      "main": [[{ "node": "HTTP — Fetch PDP", "type": "main", "index": 0 }]]
+    },
+    "HTTP — Fetch PDP": {
+      "main": [[{ "node": "IF — Status 200", "type": "main", "index": 0 }]]
+    },
+    "IF — Status 200": {
+      "main": [
+        [{ "node": "Code — Parse PDP", "type": "main", "index": 0 }],
+        [{ "node": "Postgres — Mark check_failed", "type": "main", "index": 0 }]
+      ]
+    },
+    "Code — Parse PDP": {
+      "main": [[{ "node": "Postgres — UPDATE state", "type": "main", "index": 0 }]]
+    },
+    "Postgres — UPDATE state": {
+      "main": [[{ "node": "Wait 800ms", "type": "main", "index": 0 }]]
+    },
+    "Postgres — Mark check_failed": {
+      "main": [[{ "node": "Wait 800ms", "type": "main", "index": 0 }]]
+    },
+    "Wait 800ms": {
+      "main": [[{ "node": "Split In Batches (200)", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "versionId": "1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "id": "tecbite-daily-stock-price-refresh",
+  "tags": []
+}
