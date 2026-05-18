@@ -12,7 +12,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normaliza parámetros del agente. Acepta brand, model, year.\nconst raw = $input.first().json || {};\nconst brand = (raw.brand || '').trim();\nconst model = (raw.model || '').trim();\nconst year  = parseInt(raw.year, 10) || null;\n\n// Estrategia: match exacto primero, luego fallback con rango ±3 años\nreturn [{ json: { brand, model, year, year_lo: year ? year - 3 : null, year_hi: year ? year + 3 : null } }];"
+        "jsCode": "// Normaliza parámetros del agente. Acepta brand, model, year.\nconst raw = $input.first().json || {};\n\n// Detectar si los parámetros están dentro de un objeto 'query'\nconst data = (raw.query && typeof raw.query === 'object' && !Array.isArray(raw.query)) ? raw.query : raw;\nconst brand = (data.brand || raw.brand || '').trim();\nconst model = (data.model || raw.model || '').trim();\nconst year  = parseInt(data.year || raw.year, 10) || null;\n\n// Estrategia: match exacto primero, luego fallback con rango ±3 años\nreturn [{ json: { brand, model, year, year_lo: year ? year - 3 : null, year_hi: year ? year + 3 : null } }];"
       },
       "name": "Normalize Input",
       "type": "n8n-nodes-base.code",

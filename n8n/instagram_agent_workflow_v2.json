@@ -1,5 +1,5 @@
 {
-  "name": "Tecbite AI Agent v2 - Tools Agent (OpenAI)",
+  "name": "Tecbite AI Agent v2 - Tools Agent (OpenRouter + DeepSeek)",
   "nodes": [
     {
       "parameters": {
@@ -34,7 +34,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || {};\nconst messaging = body.entry?.[0]?.messaging?.[0] || {};\nif (messaging.is_echo === true) return [];\nconst text = (messaging.message?.text || '').trim();\nif (!text) return [];\n\nconst referral = messaging.referral || {};\nconst adRef = (referral.ref || '').trim();\nconst adId  = (referral.ad_id || '').trim();\nconst adSource = (referral.source || '').trim();\n\nreturn [{ json: {\n  user_id: messaging.sender?.id || null,\n  message_text: text,\n  ad_ref: adRef,\n  ad_id: adId,\n  ad_source: adSource,\n  session_key: messaging.sender?.id || 'anon'\n} }];"
+        "jsCode": "const body = $json.body || {};\nconst messaging = body.entry?.[0]?.messaging?.[0] || {};\nif (messaging.is_echo === true) return [];\nconst text = (messaging.message?.text || '').trim();\nif (!text) return [];\n\nconst referral = messaging.referral || {};\nconst adRef = (referral.ref || '').trim();\nconst adId  = (referral.ad_id || '').trim();\nconst adSource = (referral.source || '').trim();\nconst adTitle = (referral.ad_title || '').trim();\n\nreturn [{ json: {\n  user_id: messaging.sender?.id || null,\n  message_text: text,\n  ad_ref: adRef,\n  ad_id: adId,\n  ad_source: adSource,\n  ad_title: adTitle,\n  session_key: messaging.sender?.id || 'anon'\n} }];"
       },
       "name": "Filter & Normalize",
       "type": "n8n-nodes-base.code",
@@ -45,11 +45,11 @@
       "parameters": {
         "agent": "toolsAgent",
         "promptType": "define",
-        "text": "={{ $json.message_text }}{{ $json.ad_ref ? '\\n\\n[CONTEXTO DEL ANUNCIO]\\nad_ref: ' + $json.ad_ref + ($json.ad_id ? '\\nad_id: ' + $json.ad_id : '') : '' }}",
+        "text": "={{ $json.message_text }}{{ $json.ad_ref ? '\\n\\n[CONTEXTO DEL ANUNCIO]\\nad_ref: ' + $json.ad_ref + ($json.ad_id ? '\\nad_id: ' + $json.ad_id : '') : '' }}{{ $json.ad_title ? '\\n\\n[TÍTULO DEL ANUNCIO]\\n' + $json.ad_title : '' }}",
         "options": {
           "maxIterations": 5,
           "returnIntermediateSteps": false,
-          "systemMessage": "Eres el asesor virtual de Tecbite Panamá, especialista en accesorios Thule, WeatherTech y CURT. Respondes por Instagram DM en español de Panamá.\n\n## REGLA INVIOLABLE\nTu conocimiento de productos Thule/WeatherTech/CURT está DESACTUALIZADO. NUNCA menciones un producto específico (modelo, precio, compatibilidad) sin haber consultado ANTES una tool. Productos como 'Thule EasyFold XT', 'Thule VeloSpace', 'Thule HoldUp' — NO los menciones a menos que aparezcan literalmente en el resultado de una tool.\n\n## CUÁNDO LLAMAR CADA TOOL\n- decode_ad_ref: SIEMPRE que llegue ad_ref en el contexto.\n- search_vehicle_fitment: cuando mencionen marca + modelo de vehículo.\n- search_attributes_jsonb: cuando search_vehicle_fitment no encuentre data, O cuando el año sea ≥ 2015 (busca en title Y attributes).\n- search_products_by_brand: para precio/stock genérico de una marca, sin vehículo.\n- vector_search_docs: para preguntas descriptivas (cómo se instala, soporta e-bike, es resistente).\n\n## FLUJO TÍPICO\n1. Si hay ad_ref → llama decode_ad_ref primero.\n2. Si mencionan vehículo → llama search_attributes_jsonb (más completo).\n3. Si no encuentra → search_vehicle_fitment como fallback.\n4. Genera la respuesta final con los datos REALES devueltos.\n\n## CUANDO NO HAY DATA EXACTA\nDi la verdad. Ejemplo: 'Tengo registrados productos para Mitsubishi Montero Sport 2016+. Para tu 2023 te recomiendo escribir al WhatsApp 6995-1274.' Igual ofrece los productos relacionados.\n\n## ESTILO\n- Máximo 3 párrafos cortos.\n- Lista productos: '🔹 *Título exacto* — $precio (stock_status)'\n- Solo SKUs/precios LITERALES de la tool.\n- Si hay promo: '🔥 *PROMO*: ...'\n- Cierra: '¿Te ayudo con algo más? También puedes escribirme al WhatsApp 6995-1274.'\n\n## REGLA DE VEHÍCULO\nFitment SIN marca/modelo/año → pide los datos antes de llamar tools.\nPrecio/stock genérico → llama tool directo sin pedir vehículo."
+          "systemMessage": "Eres el asesor virtual de Tecbite Panamá, especialista en accesorios Thule, WeatherTech y CURT. Respondes por Instagram DM en español de Panamá.\n\n## REGLA INVIOLABLE - SOLO DATOS DE TOOLS\nTu conocimiento de productos está DESACTUALIZADO. SOLO puedes mencionar productos que APAREZCAN LITERALMENTE en el resultado de las tools. NUNCA uses tu conocimiento previo sobre modelos Thule/WeatherTech/CURT.\n\n- Si las tools devuelven productos: menciona SOLO esos productos con sus datos exactos (SKU, título, precio, stock).\n- Si las tools NO devuelven productos: di \"No encontré productos específicos en el sistema\" y redirige a WhatsApp. NUNCA inventes productos.\n- Prohibido mencionar: \"Thule EasyFold XT\", \"Thule VeloSpace\", \"Thule HoldUp\", \"Thule Xpress\" o cualquier otro modelo a menos que aparezca en el resultado de una tool.\n\n## CUÁNDO LLAMAR CADA TOOL\n- decode_ad_ref: SIEMPRE que llegue ad_ref en el contexto.\n- search_vehicle_fitment: cuando mencionen marca + modelo de vehículo.\n- search_attributes_jsonb: cuando search_vehicle_fitment no encuentre data, O cuando el año sea ≥ 2015 (busca en title Y attributes).\n- search_products_by_brand: para precio/stock genérico de una marca, sin vehículo.\n- vector_search_docs: para preguntas descriptivas (cómo se instala, soporta e-bike, es resistente).\n\n## USO DE AD_TITLE\nCuando recibas un TÍTULO DEL ANUNCIO pero NO ad_ref estructurado:\n- Extrae palabras clave del título (marca, categoría, modelo de vehículo).\n- Usa esas palabras clave para llamar search_attributes_jsonb o vector_search_docs.\n- El título del anuncio es una pista sobre qué producto vio el usuario, pero NO es datos estructurados.\n\n## FLUJO TÍPICO\n1. Si hay ad_ref → llama decode_ad_ref primero.\n2. Si SOLO hay ad_title → extrae palabras clave y llama search_attributes_jsonb.\n3. Si mencionan vehículo → llama search_attributes_jsonb (más completo).\n4. Si no encuentra → search_vehicle_fitment como fallback.\n5. Genera la respuesta final con los datos REALES devueltos.\n\n## CUANDO NO HAY DATA EXACTA\nDi la verdad. Ejemplo: 'Tengo registrados productos para Mitsubishi Montero Sport 2016+. Para tu 2023 te recomiendo escribir al WhatsApp 6995-1274.' Igual ofrece los productos relacionados.\n\n## ESTILO\n- Máximo 3 párrafos cortos.\n- Lista productos: '🔹 *Título exacto* — $precio (stock_status)'\n- Solo SKUs/precios LITERALES de la tool.\n- Si hay promo: '🔥 *PROMO*: ...'\n- Cierra: '¿Te ayudo con algo más? También puedes escribirme al WhatsApp 6995-1274.'\n\n## REGLA DE VEHÍCULO\nFitment SIN marca/modelo/año → pide los datos antes de llamar tools.\nPrecio/stock genérico → llama tool directo sin pedir vehículo."
         }
       },
       "name": "AI Agent",
@@ -59,18 +59,19 @@
     },
     {
       "parameters": {
-        "model": "gpt-4o-mini",
+        "model": "deepseek/deepseek-chat",
         "options": {
+          "baseURL": "https://openrouter.ai/api/v1",
           "temperature": 0,
           "maxTokens": 1000
         }
       },
-      "name": "OpenAI Chat Model",
+      "name": "OpenRouter Chat Model",
       "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
       "typeVersion": 1.2,
       "position": [560, 740],
       "credentials": {
-        "openAiApi": { "name": "OpenAI API" }
+        "openAiApi": { "name": "OpenRouter API" }
       }
     },
     {
@@ -204,7 +205,7 @@
     "AI Agent": {
       "main": [[{ "node": "Instagram Send", "type": "main", "index": 0 }]]
     },
-    "OpenAI Chat Model": {
+    "OpenRouter Chat Model": {
       "ai_languageModel": [[{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]]
     },
     "Window Memory": {
