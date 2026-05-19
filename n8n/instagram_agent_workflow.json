@@ -1,33 +1,36 @@
 {
-  "name": "Tecbite AI Agent v2 - Tools Agent (OpenRouter + DeepSeek)",
   "nodes": [
     {
       "parameters": {
-        "httpMethod": "GET",
-        "path": "instagram-webhook-v2",
-        "options": {
-          "responseMode": "lastNode"
-        }
+        "options": {}
       },
-      "name": "Instagram Webhook GET",
-      "type": "n8n-nodes-base.webhook",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
       "typeVersion": 1,
       "position": [
-        100,
-        200
-      ]
+        8992,
+        6032
+      ],
+      "id": "6d5e8f2c-0021-4058-91a4-6e673fb5ce68",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "TBq2fZetgp7rbrsl",
+          "name": "OpenRouter account"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const q = $json.query || {};\nif (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === 'instagram-webhook') {\n  return [{ json: { challenge: q['hub.challenge'] } }];\n}\nreturn [{ json: { error: 'invalid token' } }];"
+        "jsCode": "// Build Instagram API request body from Format Messages output\nconst msg = $input.first().json;\nconst userId = msg.user_id || $('Filter & Normalize2').item.json.user_id;\nconst recipient = { id: userId };\n\nlet body;\n\nif (msg.type === 'image' && msg.image_url) {\n  body = JSON.stringify({\n    recipient: recipient,\n    message: {\n      attachment: {\n        type: 'image',\n        payload: { url: msg.image_url, is_reusable: true }\n      }\n    }\n  });\n} else if (msg.type === 'quick_replies' && msg.options && msg.options.length > 0) {\n  const qr = [];\n  const maxBtns = Math.min(msg.options.length, 13);\n  for (let i = 0; i < maxBtns; i++) {\n    qr.push({\n      content_type: 'text',\n      title: String(msg.options[i]).substring(0, 20),\n      payload: (msg.payloads && msg.payloads[i]) ? String(msg.payloads[i]).substring(0, 1000) : 'OPTION_' + i\n    });\n  }\n  body = JSON.stringify({\n    recipient: recipient,\n    message: {\n      text: String(msg.content || 'Elige una opcion:').substring(0, 2000),\n      quick_replies: qr\n    }\n  });\n} else {\n  const txt = String(msg.content || msg.text || 'Hola!').substring(0, 1000);\n  body = JSON.stringify({\n    recipient: recipient,\n    message: { text: txt }\n  });\n}\n\nreturn [{ json: { body: body, user_id: userId } }];"
       },
-      "name": "Verify GET",
+      "name": "Build Instagram Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        320,
-        200
-      ]
+        9968,
+        5616
+      ],
+      "id": "f2412070-119f-48bb-b6d2-fac11253ce08"
     },
     {
       "parameters": {
@@ -35,80 +38,62 @@
         "path": "instagram-webhook-v2",
         "options": {}
       },
-      "name": "Instagram Webhook POST",
+      "name": "Instagram Webhook POST2",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
       "position": [
-        100,
-        500
-      ]
+        8896,
+        5616
+      ],
+      "id": "fb6a0d60-2bdd-4119-b46c-992d357f377c",
+      "webhookId": "30a7e5c6-6238-4f78-858b-2c3fb4db8179"
     },
     {
       "parameters": {
         "jsCode": "const body = $json.body || {};\nconst messaging = body.entry?.[0]?.messaging?.[0] || {};\nif (messaging.is_echo === true) return [];\n\n// Check quick_reply payload (user tapped a quick reply button)\nconst quickReplyPayload = (messaging.message?.quick_reply?.payload || '').trim();\n\n// Check text message\nconst text = (messaging.message?.text || '').trim();\n\n// Use quick_reply payload as message_text if present (with prefix for agent context)\nconst messageText = quickReplyPayload \n  ? 'QR:' + quickReplyPayload \n  : text;\n\nif (!messageText) return [];\n\nconst referral = messaging.referral || {};\nconst adRef = (referral.ref || '').trim();\nconst adId  = (referral.ad_id || '').trim();\nconst adSource = (referral.source || '').trim();\nconst adTitle = (referral.ad_title || '').trim();\n\nreturn [{ json: {\n  user_id: messaging.sender?.id || null,\n  message_text: messageText,\n  ad_ref: adRef,\n  ad_id: adId,\n  ad_source: adSource,\n  ad_title: adTitle,\n  session_key: messaging.sender?.id || 'anon'\n} }];"
       },
-      "name": "Filter & Normalize",
+      "name": "Filter & Normalize2",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        320,
-        500
-      ]
+        9120,
+        5616
+      ],
+      "id": "d7a52921-7643-423b-83b6-1e56db41a548"
     },
     {
       "parameters": {
-        "agent": "toolsAgent",
         "promptType": "define",
         "text": "={{ $json.message_text }}{{ $json.ad_ref ? '\\n\\n[CONTEXTO DEL ANUNCIO]\\nad_ref: ' + $json.ad_ref + ($json.ad_id ? '\\nad_id: ' + $json.ad_id : '') : '' }}{{ $json.ad_title ? '\\n\\n[TÍTULO DEL ANUNCIO]\\n' + $json.ad_title : '' }}",
         "options": {
+          "systemMessage": "Eres el asesor virtual de Tecbite Panamá, especialista en accesorios Thule, WeatherTech y CURT. Respondes por Instagram DM en español de Panamá.\n\n## REGLA INVIOLABLE - SOLO DATOS DE TOOLS\nTu conocimiento de productos está DESACTUALIZADO. SOLO puedes mencionar productos que APAREZCAN LITERALMENTE en el resultado de las tools. NUNCA uses tu conocimiento previo sobre modelos Thule/WeatherTech/CURT.\n\n- Si las tools devuelven productos: menciona SOLO esos productos con sus datos exactos (SKU, título, precio, stock, image_url).\n- Si las tools NO devuelven productos: di \"No encontré productos específicos en el sistema\" y redirige a WhatsApp. NUNCA inventes productos.\n\n## FORMATO DE IMÁGENES (IMPORTANTE)\nCuando las tools devuelvan image_url, INCLUÍ la URL de la imagen en tu respuesta así:\n[IMG:https://url-de-la-imagen.jpg]\n🔹 *Título exacto* — $precio (stock)\n\nEl sistema automáticamente enviará la imagen como foto y agregará botones de selección cuando haya 2+ productos. NO omitas el [IMG:url].\n\n## QUICK REPLIES - CÓMO FUNCIONAN\nCuando recomendás 2 o más productos, el sistema agrega automáticamente botones numerados (1️⃣ 2️⃣ 3️⃣ 📞 WhatsApp) debajo de las imágenes.\n\nCuando el usuario toca un botón, recibirás un mensaje con formato \"QR:SELECT_0\", \"QR:SELECT_1\", etc:\n- QR:SELECT_0 -> el usuario eligió el PRIMER producto de tu última recomendación\n- QR:SELECT_1 -> el SEGUNDO producto\n- QR:SELECT_2 -> el TERCER producto\n- QR:WHATSAPP -> el usuario quiere hablar por WhatsApp\n\nCuando recibas QR:SELECT_N, respondé con más detalles sobre ESE producto específico (buscalo con search_products_by_brand usando el SKU).\nCuando recibas QR:WHATSAPP, decile: \"¡Claro! Escribinos al WhatsApp 6995-1274 y te atendemos personalmente.\"\n\n## CUÁNDO LLAMAR CADA TOOL\n- decode_ad_ref: SIEMPRE que llegue ad_ref en el contexto.\n- search_vehicle_fitment: cuando mencionen marca + modelo de vehículo.\n- search_attributes_jsonb: cuando search_vehicle_fitment no encuentre data, O cuando el año sea >= 2015 (busca en title Y attributes).\n- search_products_by_brand: para precio/stock genérico de una marca, sin vehículo. También usalo cuando recibas QR:SELECT_N para buscar el SKU del producto seleccionado.\n- vector_search_docs: para preguntas descriptivas (cómo se instala, soporta e-bike, es resistente).\n\n## USO DE AD_TITLE\nCuando recibas un TÍTULO DEL ANUNCIO pero NO ad_ref estructurado:\n- Extrae palabras clave del título (marca, categoría, modelo de vehículo).\n- Usa esas palabras clave para llamar search_attributes_jsonb o vector_search_docs.\n\n## FLUJO TÍPICO\n1. Si hay ad_ref -> llama decode_ad_ref primero.\n2. Si SOLO hay ad_title -> extrae palabras clave y llama search_attributes_jsonb.\n3. Si mencionan vehículo -> llama search_attributes_jsonb (más completo).\n4. Si no encuentra -> search_vehicle_fitment como fallback.\n5. Genera la respuesta con [IMG:url] para cada producto.\n\n## ESTILO\n- Máximo 4 párrafos cortos.\n- Para cada producto: '[IMG:url]\n🔹 *Título exacto* — $precio (stock)'\n- Solo SKUs/precios LITERALES de la tool.\n- Si hay promo: '🔥 *PROMO*: ...'\n- Cierra: '¿Te ayudo con algo más? También podés escribirme al WhatsApp 6995-1274.'",
           "maxIterations": 5,
-          "returnIntermediateSteps": true,
-          "systemMessage": "Eres el asesor virtual de Tecbite Panamá, especialista en accesorios Thule, WeatherTech y CURT. Respondes por Instagram DM en español de Panamá.\n\n## REGLA INVIOLABLE - SOLO DATOS DE TOOLS\nTu conocimiento de productos está DESACTUALIZADO. SOLO puedes mencionar productos que APAREZCAN LITERALMENTE en el resultado de las tools. NUNCA uses tu conocimiento previo sobre modelos Thule/WeatherTech/CURT.\n\n- Si las tools devuelven productos: menciona SOLO esos productos con sus datos exactos (SKU, título, precio, stock, image_url).\n- Si las tools NO devuelven productos: di \"No encontré productos específicos en el sistema\" y redirige a WhatsApp. NUNCA inventes productos.\n\n## FORMATO DE IMÁGENES (IMPORTANTE)\nCuando las tools devuelvan image_url, INCLUÍ la URL de la imagen en tu respuesta así:\n[IMG:https://url-de-la-imagen.jpg]\n🔹 *Título exacto* — $precio (stock)\n\nEl sistema automáticamente enviará la imagen como foto y agregará botones de selección cuando haya 2+ productos. NO omitas el [IMG:url].\n\n## QUICK REPLIES - CÓMO FUNCIONAN\nCuando recomendás 2 o más productos, el sistema agrega automáticamente botones numerados (1️⃣ 2️⃣ 3️⃣ 📞 WhatsApp) debajo de las imágenes.\n\nCuando el usuario toca un botón, recibirás un mensaje con formato \"QR:SELECT_0\", \"QR:SELECT_1\", etc:\n- QR:SELECT_0 -> el usuario eligió el PRIMER producto de tu última recomendación\n- QR:SELECT_1 -> el SEGUNDO producto\n- QR:SELECT_2 -> el TERCER producto\n- QR:WHATSAPP -> el usuario quiere hablar por WhatsApp\n\nCuando recibas QR:SELECT_N, respondé con más detalles sobre ESE producto específico (buscalo con search_products_by_brand usando el SKU).\nCuando recibas QR:WHATSAPP, decile: \"¡Claro! Escribinos al WhatsApp 6995-1274 y te atendemos personalmente.\"\n\n## CUÁNDO LLAMAR CADA TOOL\n- decode_ad_ref: SIEMPRE que llegue ad_ref en el contexto.\n- search_vehicle_fitment: cuando mencionen marca + modelo de vehículo.\n- search_attributes_jsonb: cuando search_vehicle_fitment no encuentre data, O cuando el año sea >= 2015 (busca en title Y attributes).\n- search_products_by_brand: para precio/stock genérico de una marca, sin vehículo. También usalo cuando recibas QR:SELECT_N para buscar el SKU del producto seleccionado.\n- vector_search_docs: para preguntas descriptivas (cómo se instala, soporta e-bike, es resistente).\n\n## USO DE AD_TITLE\nCuando recibas un TÍTULO DEL ANUNCIO pero NO ad_ref estructurado:\n- Extrae palabras clave del título (marca, categoría, modelo de vehículo).\n- Usa esas palabras clave para llamar search_attributes_jsonb o vector_search_docs.\n\n## FLUJO TÍPICO\n1. Si hay ad_ref -> llama decode_ad_ref primero.\n2. Si SOLO hay ad_title -> extrae palabras clave y llama search_attributes_jsonb.\n3. Si mencionan vehículo -> llama search_attributes_jsonb (más completo).\n4. Si no encuentra -> search_vehicle_fitment como fallback.\n5. Genera la respuesta con [IMG:url] para cada producto.\n\n## ESTILO\n- Máximo 4 párrafos cortos.\n- Para cada producto: '[IMG:url]\n🔹 *Título exacto* — $precio (stock)'\n- Solo SKUs/precios LITERALES de la tool.\n- Si hay promo: '🔥 *PROMO*: ...'\n- Cierra: '¿Te ayudo con algo más? También podés escribirme al WhatsApp 6995-1274.'"
+          "returnIntermediateSteps": true
         }
       },
-      "name": "AI Agent",
+      "name": "AI Agent2",
       "type": "@n8n/n8n-nodes-langchain.agent",
       "typeVersion": 1.7,
       "position": [
-        600,
-        500
-      ]
-    },
-    {
-      "parameters": {
-        "model": "deepseek/deepseek-chat",
-        "options": {
-          "baseURL": "https://openrouter.ai/api/v1",
-          "temperature": 0,
-          "maxTokens": 1000
-        }
-      },
-      "name": "OpenRouter Chat Model",
-      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
-      "typeVersion": 1.2,
-      "position": [
-        560,
-        740
+        9408,
+        5616
       ],
-      "credentials": {
-        "openAiApi": {
-          "name": "OpenRouter API"
-        }
-      }
+      "id": "8502d518-95d1-40f6-8423-17a7b191eefd"
     },
     {
       "parameters": {
         "sessionIdType": "customKey",
-        "sessionKey": "={{ $('Filter & Normalize').item.json.session_key }}",
+        "sessionKey": "={{ $('Filter & Normalize2').item.json.session_key }}",
         "contextWindowLength": 6
       },
-      "name": "Window Memory",
+      "name": "Window Memory2",
       "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
       "typeVersion": 1.3,
       "position": [
-        720,
-        740
-      ]
+        9520,
+        5856
+      ],
+      "id": "f52a9103-ad56-478b-9e31-f8470b495b59"
     },
     {
       "parameters": {
@@ -116,20 +101,23 @@
         "description": "Decodifica un parámetro ad_ref del anuncio de Instagram con formato VENDOR-CATEGORY-MODEL-YEAR-PRICE. Llámalo SIEMPRE que en el contexto haya ad_ref. Input: { \"ad_ref\": \"string\" }. Output: { decoded, vendor, category, vehicle_model, year, price, hint }",
         "workflowId": {
           "__rl": true,
+          "value": "0gaRaUaSu2BzrV03",
           "mode": "list",
-          "value": ""
+          "cachedResultUrl": "/workflow/0gaRaUaSu2BzrV03",
+          "cachedResultName": "Tool - decode_ad_ref"
         },
         "specifyInputSchema": true,
         "schemaType": "manual",
         "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"ad_ref\": { \"type\": \"string\", \"description\": \"valor literal del campo referral.ref del webhook\" }\n  },\n  \"required\": [\"ad_ref\"]\n}"
       },
-      "name": "Tool: decode_ad_ref",
+      "name": "Tool: decode_ad_ref2",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
       "typeVersion": 1.3,
       "position": [
-        880,
-        740
-      ]
+        9680,
+        5856
+      ],
+      "id": "ca2abbde-c573-4107-8b42-c76b560f9212"
     },
     {
       "parameters": {
@@ -137,20 +125,23 @@
         "description": "Busca productos compatibles con un vehículo específico en la tabla vehicles + vehicle_product_fitment. Hace fallback fuzzy ±3 años. Input: { \"brand\": \"string\", \"model\": \"string\", \"year\": number }. Output: { found, match_type, count, results: [{ vehicle, sku, product, category, price, stock, promo, notes }] }",
         "workflowId": {
           "__rl": true,
+          "value": "uuZdDhhevVTeBgDd",
           "mode": "list",
-          "value": ""
+          "cachedResultUrl": "/workflow/uuZdDhhevVTeBgDd",
+          "cachedResultName": "Tool - search_vehicle_fitment"
         },
         "specifyInputSchema": true,
         "schemaType": "manual",
         "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"brand\": { \"type\": \"string\", \"description\": \"marca del vehículo, ej: Mitsubishi\" },\n    \"model\": { \"type\": \"string\", \"description\": \"modelo, ej: Montero Sport\" },\n    \"year\": { \"type\": \"integer\", \"description\": \"año del vehículo\" }\n  },\n  \"required\": [\"brand\", \"model\", \"year\"]\n}"
       },
-      "name": "Tool: search_vehicle_fitment",
+      "name": "Tool: search_vehicle_fitment2",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
       "typeVersion": 1.3,
       "position": [
-        1040,
-        740
-      ]
+        9840,
+        5856
+      ],
+      "id": "739b0abd-39b1-4308-b357-c3bf38b84ec5"
     },
     {
       "parameters": {
@@ -158,20 +149,23 @@
         "description": "Busca productos en tecbite_product_state cuya compatibilidad vehicular vive en el campo title o attributes JSONB. ÚSALO cuando search_vehicle_fitment no encuentre data, O cuando el año del vehículo sea reciente (>=2015). Input: { \"brand\": \"string\", \"model\": \"string\" }. Output: { results: [{ vehicle, sku, product, category, price, stock, promo, image_url, notes }] }] }",
         "workflowId": {
           "__rl": true,
+          "value": "C3Mx8TtH3ABEv178",
           "mode": "list",
-          "value": ""
+          "cachedResultUrl": "/workflow/C3Mx8TtH3ABEv178",
+          "cachedResultName": "Tool - search_attributes_jsonb"
         },
         "specifyInputSchema": true,
         "schemaType": "manual",
         "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"brand\": { \"type\": \"string\", \"description\": \"marca del vehículo, ej: Mitsubishi\" },\n    \"model\": { \"type\": \"string\", \"description\": \"modelo, ej: Montero Sport\" },\n    \"year\": { \"type\": \"integer\", \"description\": \"año (opcional)\" }\n  },\n  \"required\": [\"brand\"]\n}"
       },
-      "name": "Tool: search_attributes_jsonb",
+      "name": "Tool: search_attributes_jsonb2",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
       "typeVersion": 1.3,
       "position": [
-        1200,
-        740
-      ]
+        10000,
+        5856
+      ],
+      "id": "9e6fd456-4f3a-48f1-97d7-1c607007766b"
     },
     {
       "parameters": {
@@ -179,20 +173,23 @@
         "description": "Lista productos activos de una marca (Thule, WeatherTech, CURT) en tecbite_product_state, opcionalmente filtrado por categoría. ÚSALO para preguntas de stock/precio genéricas SIN vehículo. Input: { \"brand\": \"string\", \"category\": \"string\" }. Output: { found, count, results: [{ sku, title, brand, category, price, stock, promo }] }",
         "workflowId": {
           "__rl": true,
+          "value": "RheRa72JDJql6QkU",
           "mode": "list",
-          "value": ""
+          "cachedResultUrl": "/workflow/RheRa72JDJql6QkU",
+          "cachedResultName": "Tool - search_products_by_brand"
         },
         "specifyInputSchema": true,
         "schemaType": "manual",
         "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"brand\": { \"type\": \"string\", \"description\": \"Thule, WeatherTech o CURT\" },\n    \"category\": { \"type\": \"string\", \"description\": \"categoría opcional, ej: hitch, floorliner, bike rack\" },\n    \"limit\": { \"type\": \"integer\", \"description\": \"max resultados, default 10\" }\n  },\n  \"required\": [\"brand\"]\n}"
       },
-      "name": "Tool: search_products_by_brand",
+      "name": "Tool: search_products_by_brand2",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
       "typeVersion": 1.3,
       "position": [
-        1360,
-        740
-      ]
+        10160,
+        5856
+      ],
+      "id": "d3cd6a46-3403-437b-b5fc-1836c076d233"
     },
     {
       "parameters": {
@@ -200,20 +197,23 @@
         "description": "Búsqueda semántica en la base de documentos de Thule/WeatherTech (pgvector). ÚSALO para preguntas descriptivas como '¿es resistente?', '¿cómo se instala?', '¿soporta e-bike?'. Input: { \"query\": \"string\" }. Output: { found, count, results: [{ similarity, vendor, title, category, url, text }] }",
         "workflowId": {
           "__rl": true,
+          "value": "nMBKUH7Pb6CVX7WX",
           "mode": "list",
-          "value": ""
+          "cachedResultUrl": "/workflow/nMBKUH7Pb6CVX7WX",
+          "cachedResultName": "Tool - vector_search_docs"
         },
         "specifyInputSchema": true,
         "schemaType": "manual",
         "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"query\": { \"type\": \"string\", \"description\": \"pregunta del cliente en lenguaje natural\" },\n    \"top_k\": { \"type\": \"integer\", \"description\": \"max resultados, default 5\" },\n    \"vendor\": { \"type\": \"string\", \"description\": \"filtro opcional: thule, weathertech\" }\n  },\n  \"required\": [\"query\"]\n}"
       },
-      "name": "Tool: vector_search_docs",
+      "name": "Tool: vector_search_docs2",
       "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
       "typeVersion": 1.3,
       "position": [
-        1520,
-        740
-      ]
+        10320,
+        5856
+      ],
+      "id": "53e6217b-cf1f-4be3-a45f-dd8626967d7c"
     },
     {
       "parameters": {
@@ -249,169 +249,36 @@
           }
         }
       },
-      "name": "Instagram Send",
+      "name": "Instagram Send2",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1100,
-        500
-      ]
+        10192,
+        5616
+      ],
+      "id": "e5093a8c-41d6-4fc7-858f-f64c37114305"
     },
     {
       "parameters": {
-        "jsCode": "// Extract [IMG:url] from AI Agent output, build message sequence with quick replies\nconst agentOutput = $input.first().json;\nconst outputText = agentOutput.output || agentOutput.text || '';\nconst user_id = $('Filter & Normalize').item.json.user_id;\n\n// Extract all [IMG:url] patterns\nconst imgPattern = /\\[IMG:(https?:\\/\\/[^\\]\\s]+)\\]/g;\nconst imageUrls = [];\nlet match;\nwhile ((match = imgPattern.exec(outputText)) !== null) {\n  imageUrls.push(match[1]);\n}\n\n// Clean text: remove all [IMG:url] markers, collapse excess newlines\nconst cleanText = outputText\n  .replace(/\\[IMG:https?:\\/\\/[^\\]\\s]+\\]/g, '')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\nconst messages = [];\n\n// 1. Text message with product descriptions (if any text remains)\nif (cleanText) {\n  messages.push({ type: 'text', content: cleanText.substring(0, 2000) });\n}\n\n// 2. Image messages (one per product, max 5 to avoid rate limits)\nconst maxImages = Math.min(imageUrls.length, 5);\nfor (let i = 0; i < maxImages; i++) {\n  messages.push({ type: 'image', image_url: imageUrls[i] });\n}\n\n// 3. Quick replies for multi-product (2+ images)\nif (imageUrls.length >= 2) {\n  const numButtons = Math.min(imageUrls.length, 3);\n  const options = [];\n  const payloads = [];\n  \n  for (let i = 0; i < numButtons; i++) {\n    options.push((i + 1) + '\\uFE0F\\u20E3'); // 1️⃣ 2️⃣ 3️⃣\n    payloads.push('SELECT_' + i);\n  }\n  options.push('\\uD83D\\uDCDE WhatsApp');\n  payloads.push('WHATSAPP');\n  \n  messages.push({\n    type: 'quick_replies',\n    content: '\\u00BFCu\\u00E1l de estos productos te interesa?',\n    options: options,\n    payloads: payloads\n  });\n}\n\n// If no messages (shouldn't happen), send fallback\nif (messages.length === 0) {\n  messages.push({ type: 'text', content: outputText.substring(0, 1000) || '\\u00A1Hola! \\u00BFC\\u00F3mo puedo ayudarte?' });\n}\n\nreturn messages.map(m => ({ json: { ...m, user_id } }));"
+        "jsCode": "// Extract [IMG:url] from AI Agent output, build message sequence with quick replies\nconst agentOutput = $input.first().json;\nconst outputText = agentOutput.output || agentOutput.text || '';\nconst user_id = $('Filter & Normalize2').item.json.user_id;\n\n// Extract all [IMG:url] patterns\nconst imgPattern = /\\[IMG:(https?:\\/\\/[^\\]\\s]+)\\]/g;\nconst imageUrls = [];\nlet match;\nwhile ((match = imgPattern.exec(outputText)) !== null) {\n  imageUrls.push(match[1]);\n}\n\n// Clean text: remove all [IMG:url] markers, collapse excess newlines\nconst cleanText = outputText\n  .replace(/\\[IMG:https?:\\/\\/[^\\]\\s]+\\]/g, '')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\nconst messages = [];\n\n// 1. Text message with product descriptions (if any text remains)\nif (cleanText) {\n  messages.push({ type: 'text', content: cleanText.substring(0, 2000) });\n}\n\n// 2. Image messages (one per product, max 5 to avoid rate limits)\nconst maxImages = Math.min(imageUrls.length, 5);\nfor (let i = 0; i < maxImages; i++) {\n  messages.push({ type: 'image', image_url: imageUrls[i] });\n}\n\n// 3. Quick replies for multi-product (2+ images)\nif (imageUrls.length >= 2) {\n  const numButtons = Math.min(imageUrls.length, 3);\n  const options = [];\n  const payloads = [];\n  \n  for (let i = 0; i < numButtons; i++) {\n    options.push((i + 1) + '\\uFE0F\\u20E3'); // 1️⃣ 2️⃣ 3️⃣\n    payloads.push('SELECT_' + i);\n  }\n  options.push('\\uD83D\\uDCDE WhatsApp');\n  payloads.push('WHATSAPP');\n  \n  messages.push({\n    type: 'quick_replies',\n    content: '\\u00BFCu\\u00E1l de estos productos te interesa?',\n    options: options,\n    payloads: payloads\n  });\n}\n\n// If no messages (shouldn't happen), send fallback\nif (messages.length === 0) {\n  messages.push({ type: 'text', content: outputText.substring(0, 1000) || '\\u00A1Hola! \\u00BFC\\u00F3mo puedo ayudarte?' });\n}\n\nreturn messages.map(m => ({ json: { ...m, user_id } }));"
       },
-      "name": "Format Instagram Messages",
+      "name": "Format Instagram Messages2",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        860,
-        500
+        9760,
+        5616
       ],
-      "id": "640d1d71-6b36-4b9c-bce3-235898c680c2"
-    },
-    {
-      "parameters": {
-        "jsCode": "// Build Instagram API request body from Format Messages output\nconst msg = $input.first().json;\nconst userId = msg.user_id || $('Filter & Normalize').item.json.user_id;\nconst recipient = { id: userId };\n\nlet body;\n\nif (msg.type === 'image' && msg.image_url) {\n  body = JSON.stringify({\n    recipient: recipient,\n    message: {\n      attachment: {\n        type: 'image',\n        payload: { url: msg.image_url, is_reusable: true }\n      }\n    }\n  });\n} else if (msg.type === 'quick_replies' && msg.options && msg.options.length > 0) {\n  const qr = [];\n  const maxBtns = Math.min(msg.options.length, 13);\n  for (let i = 0; i < maxBtns; i++) {\n    qr.push({\n      content_type: 'text',\n      title: String(msg.options[i]).substring(0, 20),\n      payload: (msg.payloads && msg.payloads[i]) ? String(msg.payloads[i]).substring(0, 1000) : 'OPTION_' + i\n    });\n  }\n  body = JSON.stringify({\n    recipient: recipient,\n    message: {\n      text: String(msg.content || 'Elige una opcion:').substring(0, 2000),\n      quick_replies: qr\n    }\n  });\n} else {\n  const txt = String(msg.content || msg.text || 'Hola!').substring(0, 1000);\n  body = JSON.stringify({\n    recipient: recipient,\n    message: { text: txt }\n  });\n}\n\nreturn [{ json: { body: body, user_id: userId } }];"
-      },
-      "name": "Build Instagram Request",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        980,
-        500
-      ],
-      "id": "8dd3ae87-6e96-4323-ac69-b367ea8c8b14"
+      "id": "afc8f32f-c950-4151-b9ee-10fe7c896674"
     }
   ],
   "connections": {
-    "Instagram Webhook GET": {
-      "main": [
-        [
-          {
-            "node": "Verify GET",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Instagram Webhook POST": {
-      "main": [
-        [
-          {
-            "node": "Filter & Normalize",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Filter & Normalize": {
-      "main": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "AI Agent": {
-      "main": [
-        [
-          {
-            "node": "Format Instagram Messages",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "OpenRouter Chat Model": {
       "ai_languageModel": [
         [
           {
-            "node": "AI Agent",
+            "node": "AI Agent2",
             "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Window Memory": {
-      "ai_memory": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_memory",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Tool: decode_ad_ref": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Tool: search_vehicle_fitment": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Tool: search_attributes_jsonb": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Tool: search_products_by_brand": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Tool: vector_search_docs": {
-      "ai_tool": [
-        [
-          {
-            "node": "AI Agent",
-            "type": "ai_tool",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Format Instagram Messages": {
-      "main": [
-        [
-          {
-            "node": "Build Instagram Request",
-            "type": "main",
             "index": 0
           }
         ]
@@ -421,7 +288,117 @@
       "main": [
         [
           {
-            "node": "Instagram Send",
+            "node": "Instagram Send2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Webhook POST2": {
+      "main": [
+        [
+          {
+            "node": "Filter & Normalize2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter & Normalize2": {
+      "main": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent2": {
+      "main": [
+        [
+          {
+            "node": "Format Instagram Messages2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Memory2": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: decode_ad_ref2": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: search_vehicle_fitment2": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: search_attributes_jsonb2": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: search_products_by_brand2": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool: vector_search_docs2": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent2",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Instagram Messages2": {
+      "main": [
+        [
+          {
+            "node": "Build Instagram Request",
             "type": "main",
             "index": 0
           }
@@ -429,6 +406,9 @@
       ]
     }
   },
-  "active": false,
-  "settings": {}
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4c11f3f0ce58ffb785496d7df705582810a138ea1a6d4a759be105e010ad7037"
+  }
 }
