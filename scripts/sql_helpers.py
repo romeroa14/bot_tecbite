@@ -152,6 +152,7 @@ SELECT
     ps.currency,
     ps.stock_status,
     ps.fresh_until,
+    ps.image_url,
     s.snapshot_id,
     s.snapshot_at,
     s.status
@@ -179,6 +180,7 @@ WITH latest_commerce AS (
         ps.currency,
         ps.stock_status,
         ps.promo_text,
+        ps.image_url,
         ps.fresh_until,
         ps.attributes,
         ps.provenance,

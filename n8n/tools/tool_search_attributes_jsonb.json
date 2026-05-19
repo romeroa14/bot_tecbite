@@ -2,11 +2,16 @@
   "name": "Tool - search_attributes_jsonb",
   "nodes": [
     {
-      "parameters": { "inputSource": "passthrough" },
+      "parameters": {
+        "inputSource": "passthrough"
+      },
       "name": "When Executed by Another Workflow",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [200, 300]
+      "position": [
+        200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -15,12 +20,15 @@
       "name": "Build Pattern",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [420, 300]
+      "position": [
+        420,
+        300
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT DISTINCT ON (product_sku)\n       product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text,\n       attributes,\n       CASE WHEN title ILIKE $1 THEN 'title' ELSE 'attributes' END AS matched_in\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND (title ILIKE $1 OR attributes::text ILIKE $1)\n ORDER BY product_sku,\n          CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n          price_amount ASC NULLS LAST\n LIMIT 10;",
+        "query": "SELECT DISTINCT ON (product_sku)\n       product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text,\n       image_url, attributes,\n       CASE WHEN title ILIKE $1 THEN 'title' ELSE 'attributes' END AS matched_in\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND (title ILIKE $1 OR attributes::text ILIKE $1)\n ORDER BY product_sku,\n          CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n          price_amount ASC NULLS LAST\n LIMIT 10;",
         "options": {
           "queryReplacement": "={{ $json.pattern }}"
         }
@@ -28,25 +36,63 @@
       "name": "Query Attributes",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [640, 300],
+      "position": [
+        640,
+        300
+      ],
       "credentials": {
-        "postgres": { "name": "Tecbite Postgres" }
+        "postgres": {
+          "name": "Tecbite Postgres"
+        }
       }
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Build Pattern').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `Sin matches en attributes para pattern '${input.pattern}'.`, query: input } }];\n}\n\n// Intenta extraer años de la cadena CarroN dentro de attributes\nfunction extractCompat(attrs, brand, model) {\n  if (!attrs || typeof attrs !== 'object') return null;\n  const entries = Object.values(attrs).filter(v => typeof v === 'string');\n  const matched = entries.filter(s => {\n    const up = s.toUpperCase();\n    if (brand && !up.includes(brand.toUpperCase())) return false;\n    if (model && !up.includes(model.toUpperCase())) return false;\n    return brand || model;\n  });\n  return matched.length ? matched : null;\n}\n\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  query: input,\n  results: rows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    promo: r.promo_text || null,\n    matched_compat: extractCompat(r.attributes, input.brand, input.model)\n  }))\n} }];"
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Build Pattern').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `Sin matches en attributes para pattern '${input.pattern}'.`, query: input } }];\n}\n\n// Intenta extraer años de la cadena CarroN dentro de attributes\nfunction extractCompat(attrs, brand, model) {\n  if (!attrs || typeof attrs !== 'object') return null;\n  const entries = Object.values(attrs).filter(v => typeof v === 'string');\n  const matched = entries.filter(s => {\n    const up = s.toUpperCase();\n    if (brand && !up.includes(brand.toUpperCase())) return false;\n    if (model && !up.includes(model.toUpperCase())) return false;\n    return brand || model;\n  });\n  return matched.length ? matched : null;\n}\n\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  query: input,\n  results: rows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    image_url: r.image_url || null,\n    promo: r.promo_text || null,\n    matched_compat: extractCompat(r.attributes, input.brand, input.model)\n  }))\n} }];"
       },
       "name": "Format Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [860, 300]
+      "position": [
+        860,
+        300
+      ]
     }
   ],
   "connections": {
-    "When Executed by Another Workflow": { "main": [[{ "node": "Build Pattern", "type": "main", "index": 0 }]] },
-    "Build Pattern": { "main": [[{ "node": "Query Attributes", "type": "main", "index": 0 }]] },
-    "Query Attributes": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] }
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Build Pattern",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Pattern": {
+      "main": [
+        [
+          {
+            "node": "Query Attributes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Attributes": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
   "active": false,
   "settings": {},

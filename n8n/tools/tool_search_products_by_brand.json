@@ -2,11 +2,16 @@
   "name": "Tool - search_products_by_brand",
   "nodes": [
     {
-      "parameters": { "inputSource": "passthrough" },
+      "parameters": {
+        "inputSource": "passthrough"
+      },
       "name": "When Executed by Another Workflow",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [200, 300]
+      "position": [
+        200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -15,12 +20,15 @@
       "name": "Normalize Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [420, 300]
+      "position": [
+        420,
+        300
+      ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND ($1 = '' OR brand ILIKE '%' || $1 || '%')\n   AND ($2 = '' OR category ILIKE '%' || $2 || '%')\n ORDER BY CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n          price_amount ASC NULLS LAST\n LIMIT $3::int;",
+        "query": "SELECT product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text,\n       image_url\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND ($1 = '' OR brand ILIKE '%' || $1 || '%')\n   AND ($2 = '' OR category ILIKE '%' || $2 || '%')\n ORDER BY CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n          price_amount ASC NULLS LAST\n LIMIT $3::int;",
         "options": {
           "queryReplacement": "={{ $json.brand }},={{ $json.category }},={{ $json.limit }}"
         }
@@ -28,25 +36,63 @@
       "name": "Query Products",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
-      "position": [640, 300],
+      "position": [
+        640,
+        300
+      ],
       "credentials": {
-        "postgres": { "name": "Tecbite Postgres" }
+        "postgres": {
+          "name": "Tecbite Postgres"
+        }
       }
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `No hay productos activos para brand='${input.brand}' category='${input.category}'.`, query: input } }];\n}\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  results: rows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    promo: r.promo_text || null\n  }))\n} }];"
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `No hay productos activos para brand='${input.brand}' category='${input.category}'.`, query: input } }];\n}\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  results: rows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    image_url: r.image_url || null,\n    promo: r.promo_text || null\n  }))\n} }];"
       },
       "name": "Format Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [860, 300]
+      "position": [
+        860,
+        300
+      ]
     }
   ],
   "connections": {
-    "When Executed by Another Workflow": { "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]] },
-    "Normalize Input": { "main": [[{ "node": "Query Products", "type": "main", "index": 0 }]] },
-    "Query Products": { "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]] }
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Query Products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Products": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
   "active": false,
   "settings": {},
