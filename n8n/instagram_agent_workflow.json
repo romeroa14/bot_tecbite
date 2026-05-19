@@ -34,6 +34,34 @@
     },
     {
       "parameters": {
+        "path": "instagram-webhook-v2",
+        "options": {}
+      },
+      "name": "Instagram Webhook GET2",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        8896,
+        5312
+      ],
+      "id": "3d01b400-6fa6-4551-97c1-3d99f6fe45fa",
+      "webhookId": "c73d597d-f2bb-4de3-a5fc-2cff74cf9ca2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const q = $json.query || {};\nif (q['hub.mode'] === 'subscribe' && q['hub.verify_token'] === 'instagram-webhook') {\n  return [{ json: { challenge: q['hub.challenge'] } }];\n}\nreturn [{ json: { error: 'invalid token' } }];"
+      },
+      "name": "Verify GET2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        9120,
+        5312
+      ],
+      "id": "7430f807-4f19-4e1f-a9f0-c1b641cad026"
+    },
+    {
+      "parameters": {
         "httpMethod": "POST",
         "path": "instagram-webhook-v2",
         "options": {}
@@ -289,6 +317,17 @@
         [
           {
             "node": "Instagram Send2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram Webhook GET2": {
+      "main": [
+        [
+          {
+            "node": "Verify GET2",
             "type": "main",
             "index": 0
           }
