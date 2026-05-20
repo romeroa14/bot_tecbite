@@ -15,7 +15,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $input.first().json || {};\nconst brand = (raw.brand || '').trim();\nconst category = (raw.category || '').trim();\nconst limit = Math.min(parseInt(raw.limit, 10) || 10, 20);\nreturn [{ json: { brand, category, limit } }];"
+        "jsCode": "const raw = $input.first().json || {};\nconst data = (raw.query && typeof raw.query === 'object' && !Array.isArray(raw.query)) ? raw.query : raw;\n\nconst brand = String(data.brand || raw.brand || '').trim();\nconst category = String(data.category || raw.category || '').trim();\nconst limitRaw = parseInt(data.limit || raw.limit, 10);\nconst limit = Math.max(1, Math.min(Number.isFinite(limitRaw) ? limitRaw : 10, 20));\n\nreturn [{ json: { brand, category, limit } }];"
       },
       "name": "Normalize Input",
       "type": "n8n-nodes-base.code",
@@ -28,14 +28,15 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text,\n       image_url\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND ($1 = '' OR brand ILIKE '%' || $1 || '%')\n   AND ($2 = '' OR category ILIKE '%' || $2 || '%')\n ORDER BY CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n          price_amount ASC NULLS LAST\n LIMIT $3::int;",
+        "query": "SELECT product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text,\n       image_url\n  FROM tecbite_product_state,\n       (SELECT ($1::jsonb) AS j) AS params\n WHERE is_active = true\n   AND ((params.j->>'brand') = '' OR brand ILIKE '%' || (params.j->>'brand') || '%')\n   AND ((params.j->>'category') = '' OR category ILIKE '%' || (params.j->>'category') || '%')\n ORDER BY CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n          price_amount ASC NULLS LAST\n LIMIT 100;",
         "options": {
-          "queryReplacement": "={{ $json.brand }},={{ $json.category }},={{ $json.limit }}"
+          "queryReplacement": "={{ JSON.stringify({ brand: $json.brand, category: $json.category, limit: Number($json.limit) || 10 }) }}"
         }
       },
       "name": "Query Products",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
+      "alwaysOutputData": true,
       "position": [
         640,
         300
@@ -48,7 +49,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `No hay productos activos para brand='${input.brand}' category='${input.category}'.`, query: input } }];\n}\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  results: rows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    image_url: r.image_url || null,\n    promo: r.promo_text || null\n  }))\n} }];"
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\nconst validRows = rows.filter(r => r && r.product_sku);\nconst limited = validRows.slice(0, input.limit || 10);\n\nif (!limited.length) {\n  return [{ json: { found: false, count: 0, total_found: 0, message: `No hay productos activos para brand='${input.brand}' category='${input.category}'.`, query: input, results: [] } }];\n}\n\nreturn [{ json: {\n  found: true,\n  count: limited.length,\n  total_found: validRows.length,\n  query: input,\n  results: limited.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    image_url: r.image_url || null,\n    promo: r.promo_text || null\n  }))\n} }];"
       },
       "name": "Format Response",
       "type": "n8n-nodes-base.code",

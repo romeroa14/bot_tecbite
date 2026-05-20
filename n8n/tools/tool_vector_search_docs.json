@@ -10,7 +10,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const raw = $input.first().json || {};\nconst query = (raw.query || '').trim();\nconst topK = Math.min(parseInt(raw.top_k, 10) || 5, 10);\nconst vendor = (raw.vendor || '').trim();\nif (!query) {\n  return [{ json: { error: 'query es requerido', skip: true } }];\n}\nreturn [{ json: { query, topK, vendor } }];"
+        "jsCode": "const raw = $input.first().json || {};\nconst data = (raw.query && typeof raw.query === 'object' && !Array.isArray(raw.query)) ? raw.query : raw;\n\nconst query = String(data.query || raw.query || '').trim();\nconst topKRaw = parseInt(data.top_k || raw.top_k, 10);\nconst topK = Math.max(1, Math.min(Number.isFinite(topKRaw) ? topKRaw : 5, 10));\nconst vendor = String(data.vendor || raw.vendor || '').trim();\n\nif (!query) {\n  return [{ json: { error: 'query es requerido', skip: true, found: false, count: 0, results: [] } }];\n}\n\nreturn [{ json: { query, topK, vendor } }];"
       },
       "name": "Normalize Input",
       "type": "n8n-nodes-base.code",
@@ -43,14 +43,15 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT vdc.chunk_text, vd.source_url, vd.title, vd.category_hint, vd.vendor,\n       1 - (vde.embedding <=> $1::vector) AS similarity\n  FROM vendor_document_embedding vde\n  JOIN vendor_document_chunk vdc ON vdc.chunk_id = vde.chunk_id\n  JOIN vendor_document vd ON vd.doc_id = vdc.doc_id\n WHERE vd.is_active = true\n   AND ($2 = '' OR vd.vendor ILIKE $2)\n ORDER BY vde.embedding <=> $1::vector\n LIMIT $3::int;",
+        "query": "SELECT vdc.chunk_text, vd.source_url, vd.title, vd.category_hint, vd.vendor,\n       1 - (vde.embedding <=> ((params.j->>'vector_literal')::vector)) AS similarity\n  FROM vendor_document_embedding vde\n  JOIN vendor_document_chunk vdc ON vdc.chunk_id = vde.chunk_id\n  JOIN vendor_document vd ON vd.doc_id = vdc.doc_id,\n       (SELECT ($1::jsonb) AS j) AS params\n WHERE vd.is_active = true\n   AND ((params.j->>'vendor') = '' OR vd.vendor ILIKE (params.j->>'vendor'))\n ORDER BY vde.embedding <=> ((params.j->>'vector_literal')::vector)\n LIMIT 100;",
         "options": {
-          "queryReplacement": "={{ $json.vector_literal }},={{ $json.vendor }},={{ $json.topK }}"
+          "queryReplacement": "={{ JSON.stringify({ vector_literal: $json.vector_literal, vendor: $json.vendor, topK: Number($json.topK) || 5 }) }}"
         }
       },
       "name": "pgvector Search",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
+      "alwaysOutputData": true,
       "position": [1080, 300],
       "credentials": {
         "postgres": { "name": "Tecbite Postgres" }
@@ -58,7 +59,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `Sin documentos relevantes para '${input.query}'.`, query: input.query } }];\n}\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  query: input.query,\n  results: rows.map(r => ({\n    similarity: Number(r.similarity).toFixed(3),\n    vendor: r.vendor,\n    title: r.title,\n    category: r.category_hint,\n    url: r.source_url,\n    text: r.chunk_text.substring(0, 500)\n  }))\n} }];"
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Normalize Input').first().json;\nconst validRows = rows.filter(r => r && r.chunk_text);\nconst limited = validRows.slice(0, input.topK || 5);\n\nif (!limited.length) {\n  return [{ json: { found: false, count: 0, total_found: 0, message: `Sin documentos relevantes para '${input.query}'.`, query: input.query, results: [] } }];\n}\n\nreturn [{ json: {\n  found: true,\n  count: limited.length,\n  total_found: validRows.length,\n  query: input.query,\n  results: limited.map(r => ({\n    similarity: Number(r.similarity).toFixed(3),\n    vendor: r.vendor,\n    title: r.title,\n    category: r.category_hint,\n    url: r.source_url,\n    text: String(r.chunk_text || '').substring(0, 500)\n  }))\n} }];"
       },
       "name": "Format Response",
       "type": "n8n-nodes-base.code",
