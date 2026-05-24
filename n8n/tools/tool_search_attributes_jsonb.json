@@ -36,6 +36,7 @@
       "name": "Query Attributes",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
+      "alwaysOutputData": true,
       "position": [
         640,
         300
@@ -48,7 +49,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Build Pattern').first().json;\nif (!rows.length) {\n  return [{ json: { found: false, message: `Sin matches en attributes para pattern '${input.pattern}'.`, query: input } }];\n}\n\n// Intenta extraer años de la cadena CarroN dentro de attributes\nfunction extractCompat(attrs, brand, model) {\n  if (!attrs || typeof attrs !== 'object') return null;\n  const entries = Object.values(attrs).filter(v => typeof v === 'string');\n  const matched = entries.filter(s => {\n    const up = s.toUpperCase();\n    if (brand && !up.includes(brand.toUpperCase())) return false;\n    if (model && !up.includes(model.toUpperCase())) return false;\n    return brand || model;\n  });\n  return matched.length ? matched : null;\n}\n\nreturn [{ json: {\n  found: true,\n  count: rows.length,\n  query: input,\n  results: rows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    image_url: r.image_url || null,\n    promo: r.promo_text || null,\n    matched_compat: extractCompat(r.attributes, input.brand, input.model)\n  }))\n} }];"
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Build Pattern').first().json;\nconst validRows = rows.filter(r => r && r.product_sku);\n\nif (!validRows.length) {\n  return [{ json: {\n    found: false,\n    count: 0,\n    message: `Sin matches en attributes para pattern '${input.pattern}'.`,\n    query: input,\n    results: []\n  } }];\n}\n\n// Intenta extraer años de la cadena CarroN dentro de attributes\nfunction extractCompat(attrs, brand, model) {\n  if (!attrs || typeof attrs !== 'object') return null;\n  const entries = Object.values(attrs).filter(v => typeof v === 'string');\n  const matched = entries.filter(s => {\n    const up = s.toUpperCase();\n    if (brand && !up.includes(brand.toUpperCase())) return false;\n    if (model && !up.includes(model.toUpperCase())) return false;\n    return brand || model;\n  });\n  return matched.length ? matched : null;\n}\n\nreturn [{ json: {\n  found: true,\n  count: validRows.length,\n  query: input,\n  results: validRows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    image_url: r.image_url || null,\n    promo: r.promo_text || null,\n    matched_compat: extractCompat(r.attributes, input.brand, input.model)\n  }))\n} }];"
       },
       "name": "Format Response",
       "type": "n8n-nodes-base.code",
