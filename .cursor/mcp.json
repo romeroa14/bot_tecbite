@@ -1,5 +1,12 @@
 {
   "mcpServers": {
+    "n8n-mcp": {
+      "type": "http",
+      "url": "http://n8n.yavingos.com/mcp-server/http",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3ZTA4Njg3Yi1iYjkwLTQ5NDctYThlNy1jODI0YTg0MWY2ZTMiLCJpc3MiOiJuOG4iLCJhdWQiOiJtY3Atc2VydmVyLWFwaSIsImp0aSI6IjA4YmM5MDAyLTM3OTEtNGJjYy1iMWZhLWE1MzhkNmMxNTE4MiIsImlhdCI6MTc4MDUwODE3M30.q3NkYoqwpH_NavO2SZo9hzQ09xkmj1K-t7GCSc2L0_A"
+      }
+    },
     "tecbite-postgres": {
       "command": "npx",
       "args": [

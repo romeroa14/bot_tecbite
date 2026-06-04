@@ -8,39 +8,30 @@
       "name": "When Executed by Another Workflow",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [
-        200,
-        300
-      ]
+      "position": [200, 300]
     },
     {
       "parameters": {
-        "jsCode": "// Recibe palabras clave del vehículo (marca, modelo, etc.) y las busca dentro de attributes JSONB.\n// El campo attributes contiene strings como: 'MITSUBISHI,L200,4p Pickup,2024-,Normal Roof,...'\nconst raw = $input.first().json || {};\n\n// Detectar si los parámetros están dentro de un objeto 'query'\nconst data = (raw.query && typeof raw.query === 'object' && !Array.isArray(raw.query)) ? raw.query : raw;\n\n// Extraer valores - maneja caso donde AI Agent pasa objetos\nconst extractString = (val) => {\n  if (typeof val === 'string') return val;\n  if (typeof val === 'object' && val !== null) {\n    if (val.value) return String(val.value);\n    if (val.text) return String(val.text);\n    if (val.name) return String(val.name);\n    if (val.content) return String(val.content);\n  }\n  return '';\n};\n\nconst extractNumber = (val) => {\n  if (typeof val === 'number') return val;\n  if (typeof val === 'string') return parseInt(val, 10);\n  if (typeof val === 'object' && val !== null) {\n    if (val.value) return parseInt(val.value, 10);\n    if (val.number) return parseInt(val.number, 10);\n  }\n  return null;\n};\n\nconst keywords = extractString(data.keywords || raw.query || '').trim();\nconst brand = extractString(data.brand || raw.brand || '').trim();\nconst model = extractString(data.model || raw.model || '').trim();\nconst year  = extractNumber(data.year || raw.year);\n\n// Construye patrón ILIKE combinado. Ejemplo: '%MITSUBISHI%MONTERO%' o '%MITSUBISHI%' si solo brand\nlet pattern = '';\nif (brand && model) pattern = `%${brand}%${model}%`;\nelse if (brand) pattern = `%${brand}%`;\nelse if (keywords) pattern = `%${keywords.split(/\\s+/).join('%')}%`;\nelse pattern = '%';\n\nreturn [{ json: { pattern, brand, model, year, keywords } }];"
+        "jsCode": "// Búsqueda por attributes JSONB (fuente de verdad para barras Thule).\n// Flujo: marca + modelo + año + tipo de techo -> kit compatible -> barras Edge/Evo.\nconst raw = $input.first().json || {};\nconst data = (raw.query && typeof raw.query === 'object' && !Array.isArray(raw.query)) ? raw.query : raw;\n\nconst extractString = (val) => {\n  if (typeof val === 'string') return val.trim();\n  if (typeof val === 'object' && val !== null) {\n    if (val.value) return String(val.value).trim();\n    if (val.text) return String(val.text).trim();\n    if (val.name) return String(val.name).trim();\n  }\n  return '';\n};\n\nconst extractNumber = (val) => {\n  if (typeof val === 'number' && Number.isFinite(val)) return val;\n  if (typeof val === 'string') {\n    const n = parseInt(val, 10);\n    return Number.isFinite(n) ? n : null;\n  }\n  return null;\n};\n\nconst brand = extractString(data.brand || data.make || '');\nconst model = extractString(data.model || '');\nconst year = extractNumber(data.year);\nconst roofRaw = extractString(data.roof_type || data.roof || data.roof_code || '').toUpperCase();\n\n// Mapeo techo Instagram -> correlativo kit + patrón en CarroN\nconst ROOF_MAP = {\n  ROOF_D: { kit: 5, patterns: ['Normal Roof'], mode: 'kit', label: 'Techo liso' },\n  D: { kit: 5, patterns: ['Normal Roof'], mode: 'kit', label: 'Techo liso' },\n  ROOF_B: { kit: 6, patterns: ['Flush Rail', 'Flush Rails'], mode: 'kit', label: 'Riel integrado/alineado' },\n  B: { kit: 6, patterns: ['Flush Rail', 'Flush Rails'], mode: 'kit', label: 'Riel integrado/alineado' },\n  ROOF_C: { kit: 7, patterns: ['Fixed Point', 'Fixed Points'], mode: 'kit', label: 'Punto de fijación' },\n  C: { kit: 7, patterns: ['Fixed Point', 'Fixed Points'], mode: 'kit', label: 'Punto de fijación' },\n  ROOF_A: { kit: null, patterns: ['Raised', 'roof railing'], mode: 'feet', label: 'Riel elevado (solo pies)' },\n  A: { kit: null, patterns: ['Raised', 'roof railing'], mode: 'feet', label: 'Riel elevado (solo pies)' },\n  ROOF_E: { kit: null, patterns: ['Gutter', 'gutter'], mode: 'feet', label: 'Canal de agua (solo pies)' },\n  E: { kit: null, patterns: ['Gutter', 'gutter'], mode: 'feet', label: 'Canal de agua (solo pies)' },\n  '5': { kit: 5, patterns: ['Normal Roof'], mode: 'kit', label: 'Kit 5 / Techo liso' },\n  '6': { kit: 6, patterns: ['Flush Rail', 'Flush Rails'], mode: 'kit', label: 'Kit 6 / Riel integrado' },\n  '7': { kit: 7, patterns: ['Fixed Point', 'Fixed Points'], mode: 'kit', label: 'Kit 7 / Punto de fijación' },\n};\n\nconst roofKey = roofRaw.replace(/^QR:/, '');\nconst roofCfg = ROOF_MAP[roofKey] || ROOF_MAP[roofKey.replace('ROOF_', '')] || null;\n\nif (!brand || !model || !year) {\n  return [{ json: {\n    ok: false,\n    error: 'missing_slots',\n    message: 'Faltan marca, modelo o año para buscar en attributes.',\n    brand, model, year, roof_type: roofRaw,\n  } }];\n}\n\nif (!roofCfg) {\n  return [{ json: {\n    ok: false,\n    error: 'missing_roof_type',\n    message: 'Falta tipo de techo (ROOF_A..E o kit 5/6/7).',\n    brand, model, year, roof_type: roofRaw,\n  } }];\n}\n\n// Patrón SQL amplio: marca + modelo en cualquier CarroN\nconst pattern = `%${brand}%${model}%`;\nconst roofPattern = roofCfg.patterns.map((p) => `%${p}%`).join('|');\n\nreturn [{ json: {\n  ok: true,\n  brand,\n  model,\n  year,\n  roof_type: roofRaw,\n  roof_label: roofCfg.label,\n  kit_correl: roofCfg.kit,\n  search_mode: roofCfg.mode,\n  roof_patterns: roofCfg.patterns,\n  pattern,\n  roof_sql_hint: roofCfg.patterns[0],\n} }];"
       },
       "name": "Build Pattern",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        420,
-        300
-      ]
+      "position": [420, 300]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT DISTINCT ON (product_sku)\n       product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text,\n       image_url, attributes,\n       CASE WHEN title ILIKE $1 THEN 'title' ELSE 'attributes' END AS matched_in\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND (title ILIKE $1 OR attributes::text ILIKE $1)\n ORDER BY product_sku,\n          CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n          price_amount ASC NULLS LAST\n LIMIT 10;",
+        "query": "SELECT product_sku, title, brand, category,\n       price_amount, currency, stock_status, promo_text,\n       image_url, attributes::text AS attributes_text\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND attributes::text ILIKE $1\n   AND attributes::text ILIKE $2\n   AND (\n     ($3 = 'kit' AND (title ILIKE '%Kit%' OR title ILIKE '%Fix Point%' OR title ILIKE '%Fixpoint%' OR title ILIKE '%Clamp%' OR title ILIKE '%Flush%'))\n     OR ($3 = 'feet' AND (title ILIKE '%Foot%' OR title ILIKE '%Gutter%' OR title ILIKE '%pie%'))\n   )\n ORDER BY\n   CASE WHEN title ILIKE '%Kit%' THEN 1 ELSE 2 END,\n   CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n   price_amount ASC NULLS LAST\n LIMIT 80;",
         "options": {
-          "queryReplacement": "={{ $json.pattern }}"
+          "queryReplacement": "={{ [$json.pattern, '%' + $json.roof_sql_hint + '%', $json.search_mode] }}"
         }
       },
       "name": "Query Attributes",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "alwaysOutputData": true,
-      "position": [
-        640,
-        300
-      ],
+      "position": [640, 300],
       "credentials": {
         "postgres": {
           "name": "Tecbite Postgres"
@@ -49,53 +40,60 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().map(i => i.json);\nconst input = $('Build Pattern').first().json;\nconst validRows = rows.filter(r => r && r.product_sku);\n\nif (!validRows.length) {\n  return [{ json: {\n    found: false,\n    count: 0,\n    message: `Sin matches en attributes para pattern '${input.pattern}'.`,\n    query: input,\n    results: []\n  } }];\n}\n\n// Intenta extraer años de la cadena CarroN dentro de attributes\nfunction extractCompat(attrs, brand, model) {\n  if (!attrs || typeof attrs !== 'object') return null;\n  const entries = Object.values(attrs).filter(v => typeof v === 'string');\n  const matched = entries.filter(s => {\n    const up = s.toUpperCase();\n    if (brand && !up.includes(brand.toUpperCase())) return false;\n    if (model && !up.includes(model.toUpperCase())) return false;\n    return brand || model;\n  });\n  return matched.length ? matched : null;\n}\n\nreturn [{ json: {\n  found: true,\n  count: validRows.length,\n  query: input,\n  results: validRows.map(r => ({\n    sku: r.product_sku,\n    title: r.title,\n    brand: r.brand,\n    category: r.category,\n    price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n    stock: r.stock_status,\n    image_url: r.image_url || null,\n    promo: r.promo_text || null,\n    matched_compat: extractCompat(r.attributes, input.brand, input.model)\n  }))\n} }];"
+        "jsCode": "const input = $('Build Pattern').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r && r.product_sku);\n\nif (!input.ok) {\n  return [{ json: input }];\n}\n\nconst fold = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\nconst brandF = fold(input.brand);\nconst modelF = fold(input.model);\nconst year = Number(input.year);\nconst roofPatterns = (input.roof_patterns || []).map((p) => fold(p));\n\nconst yearInRange = (rangeRaw) => {\n  const m = String(rangeRaw || '').match(/(\\d{4})\\s*-\\s*(\\d{4}|)/);\n  if (!m) return true;\n  const start = parseInt(m[1], 10);\n  const end = m[2] ? parseInt(m[2], 10) : 9999;\n  return year >= start && year <= end;\n};\n\nconst parseCaroLine = (line) => {\n  const parts = String(line || '').split(',').map((p) => p.trim());\n  if (parts.length < 5) return null;\n  const edgePart = parts.find((p) => /Edge System:/i.test(p)) || '';\n  const evoPart = parts.find((p) => /Evo System:/i.test(p)) || '';\n  const edgeSkus = (edgePart.match(/\\d{5,7}/g) || []).map((s) => s + (s.endsWith('TH') ? '' : 'TH'));\n  const evoSkus = (evoPart.match(/\\d{5,7}/g) || []).map((s) => s + (s.endsWith('TH') ? '' : 'TH'));\n  return {\n    brand: parts[0],\n    model: parts[1],\n    yearRange: parts[3],\n    roofType: parts[4],\n    edge_skus: [...new Set(edgeSkus)],\n    evo_skus: [...new Set(evoSkus)],\n  };\n};\n\nconst matchesVehicle = (parsed) => {\n  if (!parsed) return false;\n  const b = fold(parsed.brand);\n  const m = fold(parsed.model);\n  if (!b.includes(brandF) && !brandF.includes(b)) return false;\n  if (!m.includes(modelF) && !modelF.includes(m)) return false;\n  if (!yearInRange(parsed.yearRange)) return false;\n  const roofF = fold(parsed.roofType);\n  return roofPatterns.some((rp) => roofF.includes(rp) || rp.includes(roofF));\n};\n\nconst kits = [];\nconst barSkuSet = new Set();\n\nfor (const row of rows) {\n  let attrs = {};\n  try { attrs = JSON.parse(row.attributes_text || '{}'); } catch (_) {}\n  const caroLines = Object.keys(attrs)\n    .filter((k) => /^Carro\\d+$/i.test(k))\n    .map((k) => attrs[k])\n    .filter(Boolean);\n\n  const matchedLines = [];\n  for (const line of caroLines) {\n    const parsed = parseCaroLine(line);\n    if (matchesVehicle(parsed)) {\n      matchedLines.push(parsed);\n      parsed.edge_skus.forEach((s) => barSkuSet.add(s));\n      parsed.evo_skus.forEach((s) => barSkuSet.add(s));\n    }\n  }\n\n  if (matchedLines.length) {\n    kits.push({\n      sku: row.product_sku,\n      title: row.title,\n      brand: row.brand,\n      category: row.category,\n      price: row.price_amount ? `${row.price_amount} ${row.currency || 'USD'}` : 'consultar',\n      stock: row.stock_status,\n      image_url: row.image_url || null,\n      promo: row.promo_text || null,\n      kit_correl: input.kit_correl,\n      roof_label: input.roof_label,\n      matched_compat: matchedLines.map((p) => `${p.brand},${p.model},${p.yearRange},${p.roofType}`),\n      edge_skus: matchedLines.flatMap((p) => p.edge_skus),\n      evo_skus: matchedLines.flatMap((p) => p.evo_skus),\n    });\n  }\n}\n\n// Para modo feet sin kit, incluir filas de pies si coinciden marca/modelo en title\nif (input.search_mode === 'feet' && kits.length === 0) {\n  for (const row of rows) {\n    const t = fold(row.title);\n    if (t.includes(brandF) && t.includes(modelF)) {\n      kits.push({\n        sku: row.product_sku,\n        title: row.title,\n        brand: row.brand,\n        category: row.category,\n        price: row.price_amount ? `${row.price_amount} ${row.currency || 'USD'}` : 'consultar',\n        stock: row.stock_status,\n        image_url: row.image_url || null,\n        promo: row.promo_text || null,\n        product_type: 'feet',\n      });\n    }\n  }\n}\n\nif (!kits.length) {\n  return [{ json: {\n    found: false,\n    count: 0,\n    message: `Sin match en attributes para ${input.brand} ${input.model} ${input.year} (${input.roof_label}).`,\n    query: input,\n    results: [],\n    bar_skus: [],\n  } }];\n}\n\nreturn [{ json: {\n  found: true,\n  count: kits.length,\n  source: 'attributes_jsonb',\n  search_mode: input.search_mode,\n  kit_correl: input.kit_correl,\n  roof_label: input.roof_label,\n  query: input,\n  results: kits.slice(0, 5),\n  bar_skus: [...barSkuSet].slice(0, 12),\n  note: input.search_mode === 'feet'\n    ? 'Techo elevado/canal: recomendar pies Thule compatibles; no aplica kit 5/6/7.'\n    : 'Kits y SKUs Edge/Evo extraídos de CarroN en attributes. Usar bar_skus para detalle de barras.',\n} }];"
       },
       "name": "Format Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        860,
-        300
-      ]
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT product_sku, title, brand, category, price_amount, currency, stock_status, promo_text, image_url\n  FROM tecbite_product_state\n WHERE is_active = true\n   AND product_sku = ANY($1::text[])\n ORDER BY CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END;",
+        "options": {
+          "queryReplacement": "={{ [$('Format Response').first().json.bar_skus || []] }}"
+        }
+      },
+      "name": "Query Bar SKUs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "alwaysOutputData": true,
+      "position": [1080, 300],
+      "credentials": {
+        "postgres": {
+          "name": "Tecbite Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Format Response').first().json;\nif (!base.found) return [{ json: base }];\n\nconst barRows = $input.all().map((i) => i.json).filter((r) => r && r.product_sku);\nconst bars = barRows.map((r) => ({\n  sku: r.product_sku,\n  title: r.title,\n  brand: r.brand,\n  category: r.category,\n  price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n  stock: r.stock_status,\n  image_url: r.image_url || null,\n  promo: r.promo_text || null,\n  product_type: /evo/i.test(r.title) ? 'evo_bar' : (/edge/i.test(r.title) ? 'edge_bar' : 'bar'),\n}));\n\nreturn [{ json: {\n  ...base,\n  bars,\n  bars_count: bars.length,\n} }];"
+      },
+      "name": "Merge Bars",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
     }
   ],
   "connections": {
     "When Executed by Another Workflow": {
-      "main": [
-        [
-          {
-            "node": "Build Pattern",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Build Pattern", "type": "main", "index": 0 }]]
     },
     "Build Pattern": {
-      "main": [
-        [
-          {
-            "node": "Query Attributes",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Query Attributes", "type": "main", "index": 0 }]]
     },
     "Query Attributes": {
-      "main": [
-        [
-          {
-            "node": "Format Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]]
+    },
+    "Format Response": {
+      "main": [[{ "node": "Query Bar SKUs", "type": "main", "index": 0 }]]
+    },
+    "Query Bar SKUs": {
+      "main": [[{ "node": "Merge Bars", "type": "main", "index": 0 }]]
     }
   },
   "active": false,
   "settings": {},
-  "id": "tool-search-attributes-jsonb"
+  "id": "tool-search-attributes-jsonb-v2-roof-kits"
 }
