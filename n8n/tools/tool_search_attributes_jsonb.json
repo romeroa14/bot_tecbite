@@ -8,7 +8,10 @@
       "name": "When Executed by Another Workflow",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
       "typeVersion": 1.1,
-      "position": [200, 300]
+      "position": [
+        200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -17,7 +20,10 @@
       "name": "Build Pattern",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [420, 300]
+      "position": [
+        420,
+        300
+      ]
     },
     {
       "parameters": {
@@ -31,7 +37,10 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "alwaysOutputData": true,
-      "position": [640, 300],
+      "position": [
+        640,
+        300
+      ],
       "credentials": {
         "postgres": {
           "name": "Tecbite Postgres"
@@ -40,12 +49,15 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $('Build Pattern').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r && r.product_sku);\n\nif (!input.ok) {\n  return [{ json: input }];\n}\n\nconst fold = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\nconst brandF = fold(input.brand);\nconst modelF = fold(input.model);\nconst year = Number(input.year);\nconst roofPatterns = (input.roof_patterns || []).map((p) => fold(p));\n\nconst yearInRange = (rangeRaw) => {\n  const m = String(rangeRaw || '').match(/(\\d{4})\\s*-\\s*(\\d{4}|)/);\n  if (!m) return true;\n  const start = parseInt(m[1], 10);\n  const end = m[2] ? parseInt(m[2], 10) : 9999;\n  return year >= start && year <= end;\n};\n\nconst parseCaroLine = (line) => {\n  const parts = String(line || '').split(',').map((p) => p.trim());\n  if (parts.length < 5) return null;\n  const edgePart = parts.find((p) => /Edge System:/i.test(p)) || '';\n  const evoPart = parts.find((p) => /Evo System:/i.test(p)) || '';\n  const edgeSkus = (edgePart.match(/\\d{5,7}/g) || []).map((s) => s + (s.endsWith('TH') ? '' : 'TH'));\n  const evoSkus = (evoPart.match(/\\d{5,7}/g) || []).map((s) => s + (s.endsWith('TH') ? '' : 'TH'));\n  return {\n    brand: parts[0],\n    model: parts[1],\n    yearRange: parts[3],\n    roofType: parts[4],\n    edge_skus: [...new Set(edgeSkus)],\n    evo_skus: [...new Set(evoSkus)],\n  };\n};\n\nconst matchesVehicle = (parsed) => {\n  if (!parsed) return false;\n  const b = fold(parsed.brand);\n  const m = fold(parsed.model);\n  if (!b.includes(brandF) && !brandF.includes(b)) return false;\n  if (!m.includes(modelF) && !modelF.includes(m)) return false;\n  if (!yearInRange(parsed.yearRange)) return false;\n  const roofF = fold(parsed.roofType);\n  return roofPatterns.some((rp) => roofF.includes(rp) || rp.includes(roofF));\n};\n\nconst kits = [];\nconst barSkuSet = new Set();\n\nfor (const row of rows) {\n  let attrs = {};\n  try { attrs = JSON.parse(row.attributes_text || '{}'); } catch (_) {}\n  const caroLines = Object.keys(attrs)\n    .filter((k) => /^Carro\\d+$/i.test(k))\n    .map((k) => attrs[k])\n    .filter(Boolean);\n\n  const matchedLines = [];\n  for (const line of caroLines) {\n    const parsed = parseCaroLine(line);\n    if (matchesVehicle(parsed)) {\n      matchedLines.push(parsed);\n      parsed.edge_skus.forEach((s) => barSkuSet.add(s));\n      parsed.evo_skus.forEach((s) => barSkuSet.add(s));\n    }\n  }\n\n  if (matchedLines.length) {\n    kits.push({\n      sku: row.product_sku,\n      title: row.title,\n      brand: row.brand,\n      category: row.category,\n      price: row.price_amount ? `${row.price_amount} ${row.currency || 'USD'}` : 'consultar',\n      stock: row.stock_status,\n      image_url: row.image_url || null,\n      promo: row.promo_text || null,\n      kit_correl: input.kit_correl,\n      roof_label: input.roof_label,\n      matched_compat: matchedLines.map((p) => `${p.brand},${p.model},${p.yearRange},${p.roofType}`),\n      edge_skus: matchedLines.flatMap((p) => p.edge_skus),\n      evo_skus: matchedLines.flatMap((p) => p.evo_skus),\n    });\n  }\n}\n\n// Para modo feet sin kit, incluir filas de pies si coinciden marca/modelo en title\nif (input.search_mode === 'feet' && kits.length === 0) {\n  for (const row of rows) {\n    const t = fold(row.title);\n    if (t.includes(brandF) && t.includes(modelF)) {\n      kits.push({\n        sku: row.product_sku,\n        title: row.title,\n        brand: row.brand,\n        category: row.category,\n        price: row.price_amount ? `${row.price_amount} ${row.currency || 'USD'}` : 'consultar',\n        stock: row.stock_status,\n        image_url: row.image_url || null,\n        promo: row.promo_text || null,\n        product_type: 'feet',\n      });\n    }\n  }\n}\n\nif (!kits.length) {\n  return [{ json: {\n    found: false,\n    count: 0,\n    message: `Sin match en attributes para ${input.brand} ${input.model} ${input.year} (${input.roof_label}).`,\n    query: input,\n    results: [],\n    bar_skus: [],\n  } }];\n}\n\nreturn [{ json: {\n  found: true,\n  count: kits.length,\n  source: 'attributes_jsonb',\n  search_mode: input.search_mode,\n  kit_correl: input.kit_correl,\n  roof_label: input.roof_label,\n  query: input,\n  results: kits.slice(0, 5),\n  bar_skus: [...barSkuSet].slice(0, 12),\n  note: input.search_mode === 'feet'\n    ? 'Techo elevado/canal: recomendar pies Thule compatibles; no aplica kit 5/6/7.'\n    : 'Kits y SKUs Edge/Evo extraídos de CarroN en attributes. Usar bar_skus para detalle de barras.',\n} }];"
+        "jsCode": "// Format Response node for Tool - search_attributes_jsonb\n// Ranking: exact model > year-range tightness > kit correl > stock\n\nconst nodeJson = (...names) => {\n  for (const name of names) {\n    try { return $(name).first().json; } catch (_) {}\n  }\n  throw new Error(`Referenced node not found: ${names.join(', ')}`);\n};\n\nconst input = nodeJson('Build Pattern1', 'Build Pattern');\nconst rows = $input.all().map((i) => i.json).filter((r) => r && r.product_sku);\n\nif (!input.ok) {\n  return [{ json: input }];\n}\n\nconst fold = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\nconst brandF = fold(input.brand);\nconst modelF = fold(input.model);\nconst year = Number(input.year);\nconst roofPatterns = (input.roof_patterns || []).map((p) => fold(p));\nconst kitCorrel = input.kit_correl;\n\nconst normAlnum = (s) => fold(s).replace(/[^a-z0-9]/g, '');\n\nconst yearInRange = (rangeRaw) => {\n  const m = String(rangeRaw || '').match(/(\\d{4})\\s*-\\s*(\\d{4}|)/);\n  if (!m) return true;\n  const start = parseInt(m[1], 10);\n  const end = m[2] ? parseInt(m[2], 10) : 9999;\n  return year >= start && year <= end;\n};\n\nconst yearRangeScore = (rangeRaw) => {\n  const m = String(rangeRaw || '').match(/(\\d{4})\\s*-\\s*(\\d{4}|)/);\n  if (!m) return 40;\n  const start = parseInt(m[1], 10);\n  const end = m[2] ? parseInt(m[2], 10) : 9999;\n  if (year < start || year > end) return -1;\n  const width = end - start + 1;\n  return Math.max(0, 100 - Math.min(width, 60));\n};\n\nconst modelMatchScore = (parsed) => {\n  const b = fold(parsed.brand);\n  const m = fold(parsed.model);\n  if (brandF !== b && !b.includes(brandF) && !brandF.includes(b)) return -1;\n\n  const pm = normAlnum(parsed.model);\n  const qm = normAlnum(input.model);\n  if (pm === qm) return 100;\n\n  const tokens = m.split(/[\\s(,\\\\/-]+/).filter((t) => t.length >= 2);\n  if (tokens.some((t) => t === modelF || normAlnum(t) === qm)) return 92;\n\n  const escaped = modelF.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  const re = new RegExp(`(?:^|[\\\\s(,/-])${escaped}(?:[\\\\s(,/-]|$)`);\n  if (re.test(m)) return 88;\n\n  if (pm.includes(qm) || qm.includes(pm)) {\n    if ((pm.startsWith('ix') || /^i[a-z0-9]{1,2}$/.test(pm)) && !qm.startsWith('i') && qm.length <= 3) return 10;\n    if (qm.startsWith('i') && !pm.startsWith('i') && pm.length <= 3) return 10;\n    return 42;\n  }\n  return 0;\n};\n\nconst parseCaroLine = (line) => {\n  const parts = String(line || '').split(',').map((p) => p.trim());\n  if (parts.length < 5) return null;\n  const edgePart = parts.find((p) => /Edge System:/i.test(p)) || '';\n  const evoPart = parts.find((p) => /Evo System:/i.test(p)) || '';\n  const edgeSkus = (edgePart.match(/\\d{5,7}/g) || []).map((s) => s + (s.endsWith('TH') ? '' : 'TH'));\n  const evoSkus = (evoPart.match(/\\d{5,7}/g) || []).map((s) => s + (s.endsWith('TH') ? '' : 'TH'));\n  return {\n    brand: parts[0],\n    model: parts[1],\n    body: parts[2],\n    yearRange: parts[3],\n    roofType: parts[4],\n    edge_skus: [...new Set(edgeSkus)],\n    evo_skus: [...new Set(evoSkus)],\n  };\n};\n\nconst matchesVehicle = (parsed) => {\n  if (!parsed) return false;\n  if (modelMatchScore(parsed) < 40) return false;\n  if (!yearInRange(parsed.yearRange)) return false;\n  const roofF = fold(parsed.roofType);\n  return roofPatterns.some((rp) => roofF.includes(rp) || rp.includes(roofF));\n};\n\nconst scoreLine = (parsed) => {\n  const ms = modelMatchScore(parsed);\n  const ys = yearRangeScore(parsed.yearRange);\n  if (ms < 40 || ys < 0) return -1;\n  // Peso extra al rango de años (desempate Yaris 5132 vs 5394, etc.)\n  return ms + ys * 2.5;\n};\n\nconst skuCorrelScore = (sku) => {\n  if (!kitCorrel) return 0;\n  const m = String(sku || '').match(/^(\\d)/);\n  if (!m) return 0;\n  return Number(m[1]) === Number(kitCorrel) ? 25 : -40;\n};\n\nconst kitMap = new Map();\n\nfor (const row of rows) {\n  let attrs = {};\n  try { attrs = JSON.parse(row.attributes_text || '{}'); } catch (_) {}\n  const caroLines = Object.keys(attrs)\n    .filter((k) => /^Carro\\d+$/i.test(k))\n    .map((k) => attrs[k])\n    .filter(Boolean);\n\n  const matchedLines = [];\n  let bestLineScore = -1;\n  for (const line of caroLines) {\n    const parsed = parseCaroLine(line);\n    if (!matchesVehicle(parsed)) continue;\n    const ls = scoreLine(parsed);\n    if (ls > bestLineScore) bestLineScore = ls;\n    matchedLines.push(parsed);\n    parsed.edge_skus.forEach((s) => {});\n  }\n\n  if (!matchedLines.length) continue;\n\n  const stockScore = row.stock_status === 'in_stock' ? 30 : row.stock_status === 'out_of_stock' ? 5 : 10;\n  const titleScore = /kit/i.test(row.title || '') ? 10 : 0;\n  const totalScore = bestLineScore + stockScore + skuCorrelScore(row.product_sku) + titleScore;\n\n  const existing = kitMap.get(row.product_sku);\n  if (!existing || totalScore > existing._score) {\n    kitMap.set(row.product_sku, {\n      sku: row.product_sku,\n      title: row.title,\n      brand: row.brand,\n      category: row.category,\n      price: row.price_amount ? `${row.price_amount} ${row.currency || 'USD'}` : 'consultar',\n      stock: row.stock_status,\n      image_url: row.image_url || null,\n      promo: row.promo_text || null,\n      kit_correl: kitCorrel,\n      roof_label: input.roof_label,\n      matched_compat: matchedLines.map((p) => `${p.brand},${p.model},${p.yearRange},${p.roofType}`),\n      edge_skus: matchedLines.flatMap((p) => p.edge_skus),\n      evo_skus: matchedLines.flatMap((p) => p.evo_skus),\n      _score: totalScore,\n      _line_score: bestLineScore,\n    });\n  }\n}\n\nconst barSkuSet = new Set();\nconst kits = [...kitMap.values()].sort((a, b) => b._score - a._score);\n\nfor (const kit of kits) {\n  kit.edge_skus.forEach((s) => barSkuSet.add(s));\n  kit.evo_skus.forEach((s) => barSkuSet.add(s));\n  delete kit._score;\n  delete kit._line_score;\n}\n\nif (input.search_mode === 'feet' && kits.length === 0) {\n  for (const row of rows) {\n    const t = fold(row.title);\n    if (t.includes(brandF) && t.includes(modelF)) {\n      kits.push({\n        sku: row.product_sku,\n        title: row.title,\n        brand: row.brand,\n        category: row.category,\n        price: row.price_amount ? `${row.price_amount} ${row.currency || 'USD'}` : 'consultar',\n        stock: row.stock_status,\n        image_url: row.image_url || null,\n        promo: row.promo_text || null,\n        product_type: 'feet',\n      });\n    }\n  }\n}\n\nif (!kits.length) {\n  return [{ json: {\n    found: false,\n    count: 0,\n    message: `Sin match en attributes para ${input.brand} ${input.model} ${input.year} (${input.roof_label}).`,\n    query: input,\n    results: [],\n    bar_skus: [],\n  } }];\n}\n\nconst primary = kits[0];\nconst ambiguous = kits.length > 1;\n\nreturn [{ json: {\n  found: true,\n  count: kits.length,\n  source: 'attributes_jsonb',\n  search_mode: input.search_mode,\n  kit_correl: kitCorrel,\n  roof_label: input.roof_label,\n  query: input,\n  primary_recommendation: primary,\n  ambiguous,\n  results: kits.slice(0, 5),\n  bar_skus: [...barSkuSet].slice(0, 12),\n  note: input.search_mode === 'feet'\n    ? 'Techo elevado/canal: recomendar pies Thule compatibles; no aplica kit 5/6/7.'\n    : ambiguous\n      ? 'Varios kits compatibles; usar SOLO results[0] / primary_recommendation salvo que el usuario aclare carrocería.'\n      : 'Kit principal en results[0]. Barras solo desde bars[] si el usuario pide detalle.',\n} }];\n"
       },
       "name": "Format Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [860, 300]
+      "position": [
+        860,
+        300
+      ]
     },
     {
       "parameters": {
@@ -59,7 +71,10 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "alwaysOutputData": true,
-      "position": [1080, 300],
+      "position": [
+        1080,
+        300
+      ],
       "credentials": {
         "postgres": {
           "name": "Tecbite Postgres"
@@ -68,29 +83,72 @@
     },
     {
       "parameters": {
-        "jsCode": "const base = $('Format Response').first().json;\nif (!base.found) return [{ json: base }];\n\nconst barRows = $input.all().map((i) => i.json).filter((r) => r && r.product_sku);\nconst bars = barRows.map((r) => ({\n  sku: r.product_sku,\n  title: r.title,\n  brand: r.brand,\n  category: r.category,\n  price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n  stock: r.stock_status,\n  image_url: r.image_url || null,\n  promo: r.promo_text || null,\n  product_type: /evo/i.test(r.title) ? 'evo_bar' : (/edge/i.test(r.title) ? 'edge_bar' : 'bar'),\n}));\n\nreturn [{ json: {\n  ...base,\n  bars,\n  bars_count: bars.length,\n} }];"
+        "jsCode": "const base = $('Format Response1').first().json;\nif (!base.found) return [{ json: base }];\n\nconst barRows = $input.all().map((i) => i.json).filter((r) => r && r.product_sku);\nconst bars = barRows.map((r) => ({\n  sku: r.product_sku,\n  title: r.title,\n  brand: r.brand,\n  category: r.category,\n  price: r.price_amount ? `${r.price_amount} ${r.currency || 'USD'}` : 'consultar',\n  stock: r.stock_status,\n  image_url: r.image_url || null,\n  promo: r.promo_text || null,\n  product_type: /evo/i.test(r.title) ? 'evo_bar' : (/edge/i.test(r.title) ? 'edge_bar' : 'bar'),\n}));\n\nreturn [{ json: {\n  ...base,\n  bars,\n  bars_count: bars.length,\n} }];"
       },
       "name": "Merge Bars",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1300, 300]
+      "position": [
+        1300,
+        300
+      ]
     }
   ],
   "connections": {
     "When Executed by Another Workflow": {
-      "main": [[{ "node": "Build Pattern", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Build Pattern",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Pattern": {
-      "main": [[{ "node": "Query Attributes", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Query Attributes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Query Attributes": {
-      "main": [[{ "node": "Format Response", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Format Response": {
-      "main": [[{ "node": "Query Bar SKUs", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Query Bar SKUs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Query Bar SKUs": {
-      "main": [[{ "node": "Merge Bars", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Merge Bars",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
