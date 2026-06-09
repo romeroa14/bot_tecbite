@@ -183,6 +183,19 @@ const stockLabel = (stock) => {
   if (stock === 'discontinued') return 'está descontinuado';
   return 'consulta disponibilidad con nosotros';
 };
+const uniqueBars = (items) => {
+  const out = [];
+  const seenBars = new Set();
+  for (const item of items || []) {
+    const sku = String(item?.sku || '').trim().toUpperCase();
+    const title = fold(item?.title || '').replace(/\s+/g, ' ').trim();
+    const key = sku || title;
+    if (!key || seenBars.has(key)) continue;
+    seenBars.add(key);
+    out.push(item);
+  }
+  return out;
+};
 
 const imageUrls = [];
 const seen = new Set();
@@ -246,7 +259,10 @@ if (noRoofMatchTurn) {
 } else if (fitment?.found && kit && detailRequest) {
   const q = fitment.query || {};
   const lines = [`Kit ${String(kit.sku || '').replace(/TH$/i, '')}: ${kit.title} — ${formatPrice(kit.price)} (${stockLabel(kit.stock)})`];
-  const topBars = bars.slice(0, 3);
+  const topBars = uniqueBars(bars).slice(0, 3);
+  imageUrls.length = 0;
+  seen.clear();
+  if (kit.image_url) pushUrl(kit.image_url);
   for (const b of topBars) {
     lines.push(`${b.title} — ${formatPrice(b.price)} (${stockLabel(b.stock)})`);
     if (b.image_url) pushUrl(b.image_url);

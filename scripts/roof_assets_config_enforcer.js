@@ -105,6 +105,19 @@ const formatPrice = (p) => {
   return m ? `$${m[1]} USD` : String(p || 'consultar');
 };
 const stockLabel = (s) => (s === 'in_stock' ? 'está en stock' : 'consulta disponibilidad con nosotros');
+const uniqueBars = (items) => {
+  const out = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    const sku = String(item?.sku || '').trim().toUpperCase();
+    const title = fold(item?.title || '').replace(/\s+/g, ' ').trim();
+    const key = sku || title;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+};
 
 if (fitment?.found && kit && roofTurn && !detailRequest) {
   const q = fitment.query || {};
@@ -114,7 +127,7 @@ if (fitment?.found && kit && roofTurn && !detailRequest) {
   commercial_image = (selectedRoof && roof_assets.items[selectedRoof]?.public_url) || '';
 } else if (fitment?.found && kit && detailRequest) {
   const lines = [`Kit ${String(kit.sku || '').replace(/TH$/i, '')}: ${kit.title} — ${formatPrice(kit.price)} (${stockLabel(kit.stock)})`];
-  for (const b of (fitment.bars || []).slice(0, 3)) {
+  for (const b of uniqueBars(fitment.bars).slice(0, 3)) {
     lines.push(`${b.title} — ${formatPrice(b.price)} (${stockLabel(b.stock)})`);
   }
   formatted_message = lines.join('\n') + '\n\n¿Te interesa cotizar el kit, las barras o ambos? Si prefieres, también te conecto con un asesor.';
