@@ -188,7 +188,7 @@ if (outputUpper.includes('[ROOF_MENU]')) {
   stage = 'collect_roof';
 } else if (outputUpper.includes('[WT_MENU]') || outputUpper.includes('[MAIN_MENU]')) {
   stage = 'collect_category';
-} else if (outboundText.includes('Dave') || outboundText.includes('Eduardo') || outputUpper.includes('WHATSAPP')) {
+} else if (inboundUpper.includes('QR:WHATSAPP') || inboundUpper.includes('QR:ADV_') || outputUpper.includes('[ADVISOR_MENU]')) {
   stage = 'handoff';
 } else if (!category) {
   stage = 'collect_category';

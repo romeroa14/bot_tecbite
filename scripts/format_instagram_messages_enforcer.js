@@ -1,4 +1,34 @@
 // Format Instagram Messages2 — product accuracy enforcer
+const SALES_ADVISORS = [
+  {
+    id: 'DAVE',
+    name: 'Dave',
+    qrLabel: 'Dave',
+    qrPayload: 'ADV_DAVE',
+    phone: '50769880471',
+    waText: 'Hola Dave, buen día. Te contacto de Tecbite porque estoy interesado en algunos productos Thule y WeatherTech y quisiera recibir tu asesoría.',
+  },
+  {
+    id: 'EDUARDO',
+    name: 'Eduardo',
+    qrLabel: 'Eduardo',
+    qrPayload: 'ADV_EDUARDO',
+    phone: '50769504792',
+    waText: 'Hola Eduardo, buen día. Te escribo porque necesito tu asistencia con unos productos Thule y WeatherTech. ¿Me puedes orientar por favor?',
+  },
+];
+const buildWaUrl = (phone, text) => `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(text)}`;
+const findAdvisorByPayload = (value) => {
+  const inboundUpper = String(value || '').trim().toUpperCase();
+  return SALES_ADVISORS.find((a) => inboundUpper === `QR:${a.qrPayload}`) || null;
+};
+const stripAdvisorLinks = (text) => String(text || '')
+  .replace(/\[ADVISOR_MENU\]/gi, '')
+  .replace(/https?:\/\/(?:api\.)?whatsapp\.com\/send[^\s)\]]+/gi, '')
+  .replace(/^\s*[-•*]\s*(Dave|Eduardo)\s*:?\s*$/gim, '')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
 const agentOutput = $input.first().json;
 let outputText = agentOutput.output || agentOutput.text || '';
 
@@ -63,7 +93,7 @@ const normalizeRoof = (v) => {
   return m ? 'ROOF_' + m[1] : '';
 };
 const selectedRoof = normalizeRoof(inboundText);
-const detailRequest = /\b(fotos?|foto|detalle|detalles|precios?\s+(de\s+)?(las\s+)?barras|mas\s+info|más\s+info|mas\s+informacion|más\s+informaci[oó]n|opciones\s+de\s+barras|ver\s+barras|mostrar\s+barras)\b/i.test(inboundFold);
+const detailRequest = /\b(fotos?|foto|detalle|detalles|detalles?\s+completos?|precios?\s+(de\s+)?(las\s+)?barras|mas\s+info|más\s+info|mas\s+informacion|más\s+informaci[oó]n|opciones\s+de\s+barras|ver\s+barras|mostrar\s+barras|muestrame|mu[eé]strame|desglosa)\b/i.test(inboundFold);
 
 const normalizeVehicleText = (value) => String(value || '')
   .replace(/\[USER_ROOF:[A-E]\]/gi, '')
@@ -153,7 +183,35 @@ const parseFitment = () => {
   return last;
 };
 
-const fitment = parseFitment();
+const loadFitmentFromToolNode = () => {
+  const names = ['Tool: search_attributes_jsonb2', 'Tool: search_attributes_jsonb'];
+  for (const name of names) {
+    try {
+      for (const item of $(name).all()) {
+        const j = item?.json;
+        if (j?.found === true && Array.isArray(j.results) && j.results.length) return j;
+      }
+    } catch (_) {}
+  }
+  return null;
+};
+
+const loadFitmentFromLookupNode = () => {
+  let attempted = false;
+  try {
+    attempted = !!$('Prepare Fitment Query').first().json.fitment_lookup_attempted;
+  } catch (_) {}
+  if (!attempted) return null;
+  try {
+    const j = $('Fitment Lookup').first().json;
+    if (j && typeof j === 'object' && ('found' in j)) return j;
+  } catch (_) {}
+  return null;
+};
+
+let fitment = parseFitment();
+if (!fitment?.found) fitment = loadFitmentFromLookupNode();
+if (!fitment?.found) fitment = loadFitmentFromToolNode();
 const kit = fitment?.results?.[0] || fitment?.primary_recommendation || null;
 const bars = Array.isArray(fitment?.bars) ? fitment.bars : [];
 
@@ -165,7 +223,9 @@ const roofSelectionInput = /^QR:ROOF_[A-E]$/i.test(inboundText.trim())
 const roofRecommendTurn = roofSelectionInput || (
   fitment?.found === true && kit && /^ROOF_[A-E]$/i.test(leadRoof)
 );
-const noRoofMatchTurn = roofSelectionInput && !fitment?.found && needsRoofSelection && !!currentVehicle;
+let fitmentLookupAttempted = false;
+try { fitmentLookupAttempted = !!$('Prepare Fitment Query').first().json.fitment_lookup_attempted; } catch (_) {}
+const noRoofMatchTurn = roofSelectionInput && fitmentLookupAttempted && fitment?.found === false && needsRoofSelection && !!currentVehicle;
 const allowedSkus = new Set();
 if (kit?.sku) allowedSkus.add(String(kit.sku).toUpperCase());
 for (const b of bars) {
@@ -278,8 +338,12 @@ if (noRoofMatchTurn) {
   cleanText = cleanText.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-// Collect tool images only for non-roof-selection turns
-if (!(fitment?.found && kit && roofRecommendTurn && !detailRequest)) {
+const enforcerControlledImages = !!(fitment?.found && kit && (
+  (roofRecommendTurn && !detailRequest) || detailRequest
+));
+
+// Collect tool images only when enforcer did not already curate images
+if (!enforcerControlledImages) {
   for (const step of steps) {
     let data = step?.observation;
     if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_) { data = null; } }
@@ -287,16 +351,13 @@ if (!(fitment?.found && kit && roofRecommendTurn && !detailRequest)) {
     for (const row of results.slice(0, 1)) {
       pushUrl(row?.image_url);
     }
-    if (Array.isArray(data?.bars) && detailRequest) {
-      for (const b of data.bars.slice(0, 3)) pushUrl(b?.image_url);
-    }
   }
 }
 
 const imgPat = /\[IMG:(https?:\/\/[^\]\s]+)\]/g;
 let match;
 while ((match = imgPat.exec(outputText)) !== null) {
-  if (!(fitment?.found && kit && roofRecommendTurn && !detailRequest)) pushUrl(match[1]);
+  if (!enforcerControlledImages) pushUrl(match[1]);
 }
 
 const countProducts = (t) => {
@@ -335,13 +396,47 @@ if (roofMenu) {
   qrConfig = { options: opts, payloads: pays };
 }
 
+const inboundUpper = inboundText.trim().toUpperCase();
+const selectedAdvisor = findAdvisorByPayload(inboundText);
+const advisorMenuRequested = !!(
+  selectedAdvisor === null && (
+    inboundUpper === 'QR:WHATSAPP'
+    || outputText.includes('[ADVISOR_MENU]')
+    || /api\.whatsapp\.com\/send/i.test(outputText)
+    || /\[ADVISOR_MENU\]/i.test(outputText)
+  )
+);
+
+cleanText = stripAdvisorLinks(cleanText);
+
 const messages = [];
 const maxImages = Math.min(imageUrls.length, 5);
 for (let i = 0; i < maxImages; i++) {
   messages.push({ type: 'image', image_url: imageUrls[i], user_id });
 }
 
-if (qrConfig) {
+if (selectedAdvisor) {
+  messages.push({
+    type: 'button_template',
+    content: `Te conecto con ${selectedAdvisor.name}. Toca el botón para abrir WhatsApp.`,
+    buttons: [{
+      title: `WhatsApp ${selectedAdvisor.name}`,
+      url: buildWaUrl(selectedAdvisor.phone, selectedAdvisor.waText),
+    }],
+    user_id,
+  });
+} else if (advisorMenuRequested) {
+  if (!cleanText || cleanText.length < 10) {
+    cleanText = 'Con gusto te conecto con un asesor. ¿Con quién prefieres hablar?';
+  }
+  messages.push({
+    type: 'text_with_quick_replies',
+    content: cleanText.substring(0, 2000),
+    options: SALES_ADVISORS.map((a) => a.qrLabel),
+    payloads: SALES_ADVISORS.map((a) => a.qrPayload),
+    user_id,
+  });
+} else if (qrConfig) {
   messages.push({
     type: 'text_with_quick_replies',
     content: (cleanText || '¡Hola!').substring(0, 2000),

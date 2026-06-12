@@ -1,5 +1,10 @@
 // Roof Assets Config + product accuracy enforcer (barras)
-const input = $input.first().json || {};
+let input = {};
+try { input = $('Prepare Fitment Query').first().json || {}; } catch (_) {}
+if (!input.output && !input.text) {
+  try { input = { ...input, ...($('AI Agent').first().json || {}) }; } catch (_) {}
+}
+if (!input.output && !input.text) input = $input.first().json || {};
 
 const roof_assets = {
   source_folders: {
@@ -91,10 +96,20 @@ const loadFromToolNode = () => {
   return null;
 };
 
+const loadFromFitmentLookup = () => {
+  if (!input.fitment_lookup_attempted) return null;
+  try {
+    const j = $('Fitment Lookup').first().json;
+    if (j && typeof j === 'object' && ('found' in j)) return j;
+  } catch (_) {}
+  return null;
+};
+
 if (!fitment?.found) fitment = unwrapFitment(agentJson);
+if (!fitment?.found) fitment = loadFromFitmentLookup();
 if (!fitment?.found) fitment = loadFromToolNode();
 const kit = fitment?.results?.[0] || fitment?.primary_recommendation || null;
-const detailRequest = /\b(fotos?|detalle|precios?\s+(de\s+)?(las\s+)?barras|mas\s+info|más\s+info|opciones\s+de\s+barras)\b/i.test(fold(inboundText.replace(/^qr:/i, '')));
+const detailRequest = /\b(fotos?|foto|detalle|detalles|detalles?\s+completos?|precios?\s+(de\s+)?(las\s+)?barras|mas\s+info|más\s+info|opciones\s+de\s+barras|muestrame|mu[eé]strame|desglosa)\b/i.test(fold(inboundText.replace(/^qr:/i, '')));
 const roofTurn = /^QR:ROOF_[A-E]$/i.test(inboundText) || (/^ROOF_[A-E]$/i.test(selectedRoof) && fitment?.found);
 
 let formatted_message = '';
