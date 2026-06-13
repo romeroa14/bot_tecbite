@@ -110,7 +110,23 @@ if (!fitment?.found) fitment = loadFromFitmentLookup();
 if (!fitment?.found) fitment = loadFromToolNode();
 const kit = fitment?.results?.[0] || fitment?.primary_recommendation || null;
 const detailRequest = /\b(fotos?|foto|detalle|detalles|detalles?\s+completos?|precios?\s+(de\s+)?(las\s+)?barras|mas\s+info|más\s+info|opciones\s+de\s+barras|muestrame|mu[eé]strame|desglosa)\b/i.test(fold(inboundText.replace(/^qr:/i, '')));
-const roofTurn = /^QR:ROOF_[A-E]$/i.test(inboundText) || (/^ROOF_[A-E]$/i.test(selectedRoof) && fitment?.found);
+
+let leadState = {};
+try { leadState = $('Get Lead State').item.json || {}; } catch (_) {}
+
+const inferCategory = (text) => {
+  const f = fold(text);
+  const upper = String(text || '').toUpperCase();
+  if (upper.includes('QR:CAT_BARS')) return 'Barras techo';
+  if (upper.includes('QR:CAT_CARGO')) return 'Canasta/Baúl';
+  if (upper.includes('QR:CAT_WT') || upper.includes('QR:WT_ROW') || upper.includes('QR:WT_UNIV')) return 'Alfombras WT';
+  if (/\bbarras?\b/.test(f) || /roof\s*rack/.test(f)) return 'Barras techo';
+  if (/\balfombra\b/.test(f) || /weathertech/.test(f) || /floorliner/.test(f)) return 'Alfombras WT';
+  return null;
+};
+const currentCategory = inferCategory(inboundText) || String(leadState.category || '').trim();
+const needsRoof = ['Barras techo'].includes(currentCategory);
+const roofTurn = needsRoof && (/^QR:ROOF_[A-E]$/i.test(inboundText) || (/^ROOF_[A-E]$/i.test(selectedRoof) && fitment?.found));
 
 let formatted_message = '';
 let commercial_image = '';

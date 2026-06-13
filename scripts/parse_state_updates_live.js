@@ -162,6 +162,23 @@ if (stateYear !== undefined) year = stateYear;
 if (stateCategory !== undefined) category = stateCategory;
 if (stateRoof !== undefined) roof_type = stateRoof;
 
+const parseFlowTag = (tag) => {
+  const s = String(tag || '');
+  if (!s.startsWith('flow:')) return {};
+  const out = {};
+  for (const part of s.slice(5).split(',')) {
+    const [k, v] = part.split('=');
+    if (k && v) out[k.trim()] = v.trim();
+  }
+  return out;
+};
+
+const serializeFlowTag = (flow) => {
+  const keys = Object.keys(flow || {}).filter((k) => flow[k]);
+  if (!keys.length) return null;
+  return `flow:${keys.map((k) => `${k}=${flow[k]}`).join(',')}`;
+};
+
 const inboundUpper = inboundText.toUpperCase();
 const inboundFold = fold(inboundText);
 
@@ -178,13 +195,45 @@ const inferredCategory = (() => {
 })();
 if (inferredCategory) category = inferredCategory;
 
+const prevCategory = cleanString(prevState.category ?? null);
+const flow = parseFlowTag(prevState.product_tag);
+let product_tag = cleanString(prevState.product_tag ?? null);
+if (product_tag && !product_tag.startsWith('flow:')) product_tag = null;
+
+if (inferredCategory && inferredCategory !== prevCategory) {
+  if (inferredCategory === 'Alfombras WT') roof_type = null;
+  if (inferredCategory === 'Barras techo') roof_type = null;
+  Object.keys(flow).forEach((k) => delete flow[k]);
+}
+if (inboundUpper.includes('QR:CARGO_CANASTA')) flow.cargo = 'canasta';
+if (inboundUpper.includes('QR:CARGO_BAUL')) flow.cargo = 'baul';
+if (inboundUpper.includes('QR:BIKE_M_ROOF')) flow.mount = 'techo';
+if (inboundUpper.includes('QR:BIKE_M_TRUNK')) flow.mount = 'joroba';
+if (inboundUpper.includes('QR:BIKE_M_PICKUP')) flow.mount = 'pickup';
+if (inboundUpper.includes('QR:BIKE_M_BALL')) flow.mount = 'bola';
+if (inboundUpper.includes('QR:BIKE_M_HITCH')) flow.mount = 'hitch';
+if (inboundUpper.includes('QR:BIKE_M_ACC')) flow.mount = 'acc';
+if (inboundUpper.includes('QR:BIKE_T_ROAD')) flow.type = 'ruta';
+if (inboundUpper.includes('QR:BIKE_T_MTB')) flow.type = 'mtb';
+if (inboundUpper.includes('QR:BIKE_T_ELEC')) flow.type = 'electric';
+if (inboundUpper.includes('QR:BIKE_BARS_YES')) flow.bars = 'yes';
+if (inboundUpper.includes('QR:BIKE_BARS_NO')) flow.bars = 'no';
+product_tag = serializeFlowTag(flow) || product_tag;
+if (inboundUpper.includes('QR:CAT_WT') || inboundUpper.includes('QR:WT_ROW') || inboundUpper.includes('QR:WT_UNIV')) {
+  roof_type = normRoof(inboundText) || null;
+}
+
 const inboundRoof = normRoof(inboundText);
-if (inboundRoof) roof_type = inboundRoof;
+if (inboundRoof && category === 'Barras techo') roof_type = inboundRoof;
 
 const outputUpper = outboundText.toUpperCase();
-const needsRoof = ['Barras techo', 'Canasta/Baúl'].includes(category || '');
+const needsRoof = category === 'Barras techo';
+const needsCargoSub = category === 'Canasta/Baúl';
+const needsBikeMount = category === 'Portabici' && !flow.mount;
+const needsBikeType = category === 'Portabici' && flow.mount && !flow.type;
+const needsBikeBars = category === 'Portabici' && flow.mount === 'techo' && flow.type && !flow.bars;
 
-if (outputUpper.includes('[ROOF_MENU]')) {
+if (outputUpper.includes('[ROOF_MENU]') && needsRoof) {
   stage = 'collect_roof';
 } else if (outputUpper.includes('[WT_MENU]') || outputUpper.includes('[MAIN_MENU]')) {
   stage = 'collect_category';
@@ -200,11 +249,24 @@ if (outputUpper.includes('[ROOF_MENU]')) {
   stage = 'collect_year';
 } else if (needsRoof && !roof_type) {
   stage = 'collect_roof';
+} else if (needsCargoSub && !flow.cargo) {
+  stage = 'collect_category';
+} else if (needsBikeMount) {
+  stage = 'collect_category';
+} else if (needsBikeType) {
+  stage = 'collect_category';
+} else if (needsBikeBars) {
+  stage = 'collect_category';
 } else {
   stage = 'recommend';
 }
 
-const slots_complete = !!(category && make && model && year && (!needsRoof || roof_type));
+const slots_complete = !!(
+  category && make && model && year
+  && (!needsRoof || roof_type)
+  && (!needsCargoSub || flow.cargo)
+  && (!needsBikeMount && !needsBikeType && !needsBikeBars)
+);
 
 return [{
   json: {
@@ -215,6 +277,7 @@ return [{
     year,
     roof_type,
     category,
+    product_tag,
     stage,
     slots_complete,
     reset_vehicle_context: newVehicleContext,

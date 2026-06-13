@@ -1,0 +1,15 @@
+[Unit]
+Description=Tecbite Instagram Ops Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/html/tecbite
+EnvironmentFile=/var/www/html/tecbite/.env
+ExecStart=/var/www/html/tecbite/scripts/run_telegram_ops_bot.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

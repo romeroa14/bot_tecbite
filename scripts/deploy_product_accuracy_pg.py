@@ -14,10 +14,14 @@ ROOT = Path(__file__).resolve().parent
 
 AGENT_WF = "oYVEXFvUFdCoe9VG"
 TOOL_WF = "C3Mx8TtH3ABEv178"
+WT_WF = "RheRa72JDJql6QkU"
 
 PREPARE_FITMENT_QUERY = (ROOT / "prepare_fitment_query.js").read_text()
 FITMENT_LOOKUP_NODE_ID = "c8f4a2e1-6b3d-4f9a-9e2c-1d5a7b3c9f01"
 PREPARE_FITMENT_NODE_ID = "c8f4a2e1-6b3d-4f9a-9e2c-1d5a7b3c9f02"
+WT_LOOKUP_NODE_ID = "c8f4a2e1-6b3d-4f9a-9e2c-1d5a7b3c9f03"
+CARGO_LOOKUP_NODE_ID = "c8f4a2e1-6b3d-4f9a-9e2c-1d5a7b3c9f04"
+BIKE_LOOKUP_NODE_ID = "c8f4a2e1-6b3d-4f9a-9e2c-1d5a7b3c9f05"
 
 PATCHES: dict[str, dict[str, str]] = {
     AGENT_WF: {
@@ -30,6 +34,10 @@ PATCHES: dict[str, dict[str, str]] = {
     TOOL_WF: {
         "Format Response1": (ROOT / "tool_format_response_ranking.js").read_text(),
         "Format Response": (ROOT / "tool_format_response_ranking.js").read_text(),
+    },
+    WT_WF: {
+        "Normalize Input1": (ROOT / "tool_search_products_normalize.js").read_text(),
+        "Format Response1": (ROOT / "tool_search_products_format.js").read_text(),
     },
 }
 SYSTEM_PROMPT = (ROOT / "system_prompt.txt").read_text()
@@ -75,6 +83,101 @@ def patch_nodes(nodes: list, mapping: dict[str, str]) -> tuple[list, list[str]]:
         if name in mapping:
             node.setdefault("parameters", {})["jsCode"] = mapping[name]
             changed.append(name)
+        if name in {"Query Products", "Query Products1"}:
+            node.setdefault("parameters", {})["query"] = (
+                "SELECT product_sku, title, brand, category,\n"
+                "       price_amount, currency, stock_status, promo_text,\n"
+                "       image_url\n"
+                "  FROM tecbite_product_state,\n"
+                "       (SELECT ($1::jsonb) AS j) AS params\n"
+                " WHERE is_active = true\n"
+                "   AND ((params.j->>'brand') = '' OR brand ILIKE '%' || (params.j->>'brand') || '%')\n"
+                "   AND ((params.j->>'category') = '' OR category ILIKE '%' || (params.j->>'category') || '%')\n"
+                "   AND ((params.j->>'vehicle_make') = '' OR title ILIKE '%' || (params.j->>'vehicle_make') || '%')\n"
+                "   AND ((params.j->>'vehicle_model') = '' OR title ILIKE '%' || (params.j->>'vehicle_model') || '%')\n"
+                " ORDER BY CASE stock_status WHEN 'in_stock' THEN 1 WHEN 'out_of_stock' THEN 2 ELSE 3 END,\n"
+                "          price_amount ASC NULLS LAST\n"
+                " LIMIT 100;"
+            )
+            opts = node.setdefault("parameters", {}).setdefault("options", {})
+            opts["queryReplacement"] = (
+                "={{ JSON.stringify({ brand: $json.brand, category: $json.category, limit: Number($json.limit) || 10, "
+                "vehicle_make: $json.vehicle_make || '', vehicle_model: $json.vehicle_model || '', vehicle_year: $json.vehicle_year || null }) }}"
+            )
+            changed.append("Query Products SQL")
+        if name == "Fitment Lookup":
+            wi = node.setdefault("parameters", {}).setdefault("workflowInputs", {}).setdefault("value", {})
+            wi["brand"] = "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.brand : '' }}"
+            wi["model"] = "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.model : '' }}"
+            wi["year"] = "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.year : 0 }}"
+            wi["roof_type"] = "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.roof_type : '' }}"
+            changed.append("Fitment Lookup inputs")
+        if name == "WT Product Lookup":
+            wi = node.setdefault("parameters", {}).setdefault("workflowInputs", {}).setdefault("value", {})
+            wi["brand"] = "={{ $('Prepare Fitment Query').item.json.wt_query ? $('Prepare Fitment Query').item.json.wt_query.brand : '' }}"
+            wi["category"] = "={{ $('Prepare Fitment Query').item.json.wt_query ? $('Prepare Fitment Query').item.json.wt_query.category : '' }}"
+            wi["limit"] = "={{ $('Prepare Fitment Query').item.json.wt_query ? $('Prepare Fitment Query').item.json.wt_query.limit : 0 }}"
+            wi["vehicle_make"] = "={{ $('Prepare Fitment Query').item.json.wt_query && $('Prepare Fitment Query').item.json.wt_query.vehicle ? $('Prepare Fitment Query').item.json.wt_query.vehicle.make : '' }}"
+            wi["vehicle_model"] = "={{ $('Prepare Fitment Query').item.json.wt_query && $('Prepare Fitment Query').item.json.wt_query.vehicle ? $('Prepare Fitment Query').item.json.wt_query.vehicle.model : '' }}"
+            wi["vehicle_year"] = "={{ $('Prepare Fitment Query').item.json.wt_query && $('Prepare Fitment Query').item.json.wt_query.vehicle ? $('Prepare Fitment Query').item.json.wt_query.vehicle.year : 0 }}"
+            changed.append("WT Product Lookup inputs")
+        if name == "Thule Cargo Lookup":
+            wi = node.setdefault("parameters", {}).setdefault("workflowInputs", {}).setdefault("value", {})
+            wi["brand"] = "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.brand : '' }}"
+            wi["category"] = "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.category : '' }}"
+            wi["limit"] = "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.limit : 0 }}"
+            wi["cargo_type"] = "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.cargo_type : '' }}"
+            changed.append("Thule Cargo Lookup inputs")
+        if name == "Thule Bike Lookup":
+            wi = node.setdefault("parameters", {}).setdefault("workflowInputs", {}).setdefault("value", {})
+            wi["brand"] = "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.brand : '' }}"
+            wi["category"] = "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.category : '' }}"
+            wi["limit"] = "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.limit : 0 }}"
+            wi["thule_mount"] = "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.thule_mount : '' }}"
+            wi["thule_bike_type"] = "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.thule_bike_type : '' }}"
+            changed.append("Thule Bike Lookup inputs")
+        if name == "Save Lead State":
+            q = node.setdefault("parameters", {}).get("query", "")
+            if "product_tag" not in q:
+                node["parameters"]["query"] = q.replace(
+                    "  last_message_id,\n  updated_at\n) VALUES (",
+                    "  last_message_id,\n  product_tag,\n  updated_at\n) VALUES (",
+                ).replace(
+                    "  $9,\n  NOW()\n)",
+                    "  $9,\n  NULLIF($14, 'null'),\n  NOW()\n)",
+                ).replace(
+                    "  last_message_id = EXCLUDED.last_message_id,\n  updated_at = NOW();",
+                    "  last_message_id = EXCLUDED.last_message_id,\n  product_tag = COALESCE(EXCLUDED.product_tag, instagram_conversation_state.product_tag),\n  updated_at = NOW();",
+                )
+                opts = node.setdefault("parameters", {}).setdefault("options", {})
+                opts["queryReplacement"] = (
+                    "={{ [$json.conversation_id, $json.user_id, $json.stage, $json.make, $json.model, "
+                    "$json.year, $json.category, $json.slots_complete, $json.message_id, "
+                    "JSON.stringify($json.inbound_payload), JSON.stringify($json.outbound_payload), "
+                    "$json.roof_type, $json.reset_vehicle_context, $json.product_tag] }}"
+                )
+                changed.append("Save Lead State product_tag")
+        if name == "Get Lead State":
+            q = node.setdefault("parameters", {}).get("query", "")
+            if "s.product_tag" not in q or "s.roof_type" not in q:
+                node["parameters"]["query"] = (
+                    "SELECT \n"
+                    "  COALESCE(s.conversation_id, $1) as conversation_id,\n"
+                    "  COALESCE(s.user_id, $1) as user_id,\n"
+                    "  COALESCE(s.channel, 'instagram') as channel,\n"
+                    "  COALESCE(s.stage, 'greeting') as stage,\n"
+                    "  s.make,\n"
+                    "  s.model,\n"
+                    "  s.year,\n"
+                    "  s.category,\n"
+                    "  s.roof_type,\n"
+                    "  s.product_tag,\n"
+                    "  COALESCE(s.slots_complete, false) as slots_complete,\n"
+                    "  s.last_message_id\n"
+                    "FROM (SELECT $1 AS dummy_id) d\n"
+                    "LEFT JOIN instagram_conversation_state s ON s.conversation_id = d.dummy_id;"
+                )
+                changed.append("Get Lead State product_tag+roof_type")
         if name in {"AI Agent", "AI Agent2"}:
             options = node.setdefault("parameters", {}).setdefault("options", {})
             if options.get("systemMessage") != SYSTEM_PROMPT:
@@ -116,16 +219,103 @@ def ensure_fitment_lookup_chain(nodes: list, connections: dict) -> tuple[list, d
                 "workflowInputs": {
                     "mappingMode": "defineBelow",
                     "value": {
-                        "brand": "={{ $json.fitment_query ? $json.fitment_query.brand : '' }}",
-                        "model": "={{ $json.fitment_query ? $json.fitment_query.model : '' }}",
-                        "year": "={{ $json.fitment_query ? $json.fitment_query.year : 0 }}",
-                        "roof_type": "={{ $json.fitment_query ? $json.fitment_query.roof_type : '' }}",
+                        "brand": "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.brand : '' }}",
+                        "model": "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.model : '' }}",
+                        "year": "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.year : 0 }}",
+                        "roof_type": "={{ $('Prepare Fitment Query').item.json.fitment_query ? $('Prepare Fitment Query').item.json.fitment_query.roof_type : '' }}",
                     },
                 },
                 "options": {},
             },
         })
         changed.append("Fitment Lookup (new node)")
+
+    if "WT Product Lookup" not in names:
+        nodes.append({
+            "id": WT_LOOKUP_NODE_ID,
+            "name": "WT Product Lookup",
+            "type": "n8n-nodes-base.executeWorkflow",
+            "typeVersion": 1.2,
+            "position": [1320, 208],
+            "parameters": {
+                "workflowId": {
+                    "__rl": True,
+                    "value": WT_WF,
+                    "mode": "list",
+                    "cachedResultName": "Tool - search_products_by_brand",
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {
+                        "brand": "={{ $('Prepare Fitment Query').item.json.wt_query ? $('Prepare Fitment Query').item.json.wt_query.brand : '' }}",
+                        "category": "={{ $('Prepare Fitment Query').item.json.wt_query ? $('Prepare Fitment Query').item.json.wt_query.category : '' }}",
+                        "limit": "={{ $('Prepare Fitment Query').item.json.wt_query ? $('Prepare Fitment Query').item.json.wt_query.limit : 0 }}",
+                        "vehicle_make": "={{ $('Prepare Fitment Query').item.json.wt_query && $('Prepare Fitment Query').item.json.wt_query.vehicle ? $('Prepare Fitment Query').item.json.wt_query.vehicle.make : '' }}",
+                        "vehicle_model": "={{ $('Prepare Fitment Query').item.json.wt_query && $('Prepare Fitment Query').item.json.wt_query.vehicle ? $('Prepare Fitment Query').item.json.wt_query.vehicle.model : '' }}",
+                        "vehicle_year": "={{ $('Prepare Fitment Query').item.json.wt_query && $('Prepare Fitment Query').item.json.wt_query.vehicle ? $('Prepare Fitment Query').item.json.wt_query.vehicle.year : 0 }}",
+                    },
+                },
+                "options": {},
+            },
+        })
+        changed.append("WT Product Lookup (new node)")
+
+    if "Thule Cargo Lookup" not in names:
+        nodes.append({
+            "id": CARGO_LOOKUP_NODE_ID,
+            "name": "Thule Cargo Lookup",
+            "type": "n8n-nodes-base.executeWorkflow",
+            "typeVersion": 1.2,
+            "position": [1400, 208],
+            "parameters": {
+                "workflowId": {
+                    "__rl": True,
+                    "value": WT_WF,
+                    "mode": "list",
+                    "cachedResultName": "Tool - search_products_by_brand",
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {
+                        "brand": "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.brand : '' }}",
+                        "category": "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.category : '' }}",
+                        "limit": "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.limit : 0 }}",
+                        "cargo_type": "={{ $('Prepare Fitment Query').item.json.cargo_query ? $('Prepare Fitment Query').item.json.cargo_query.cargo_type : '' }}",
+                    },
+                },
+                "options": {},
+            },
+        })
+        changed.append("Thule Cargo Lookup (new node)")
+
+    if "Thule Bike Lookup" not in names:
+        nodes.append({
+            "id": BIKE_LOOKUP_NODE_ID,
+            "name": "Thule Bike Lookup",
+            "type": "n8n-nodes-base.executeWorkflow",
+            "typeVersion": 1.2,
+            "position": [1480, 208],
+            "parameters": {
+                "workflowId": {
+                    "__rl": True,
+                    "value": WT_WF,
+                    "mode": "list",
+                    "cachedResultName": "Tool - search_products_by_brand",
+                },
+                "workflowInputs": {
+                    "mappingMode": "defineBelow",
+                    "value": {
+                        "brand": "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.brand : '' }}",
+                        "category": "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.category : '' }}",
+                        "limit": "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.limit : 0 }}",
+                        "thule_mount": "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.thule_mount : '' }}",
+                        "thule_bike_type": "={{ $('Prepare Fitment Query').item.json.bike_query ? $('Prepare Fitment Query').item.json.bike_query.thule_bike_type : '' }}",
+                    },
+                },
+                "options": {},
+            },
+        })
+        changed.append("Thule Bike Lookup (new node)")
 
     agent_out = connections.get("AI Agent", {}).get("main", [[]])[0]
     targets = {c.get("node") for c in agent_out}
@@ -141,6 +331,15 @@ def ensure_fitment_lookup_chain(nodes: list, connections: dict) -> tuple[list, d
         "main": [[{"node": "Fitment Lookup", "type": "main", "index": 0}]],
     }
     connections["Fitment Lookup"] = {
+        "main": [[{"node": "WT Product Lookup", "type": "main", "index": 0}]],
+    }
+    connections["WT Product Lookup"] = {
+        "main": [[{"node": "Thule Cargo Lookup", "type": "main", "index": 0}]],
+    }
+    connections["Thule Cargo Lookup"] = {
+        "main": [[{"node": "Thule Bike Lookup", "type": "main", "index": 0}]],
+    }
+    connections["Thule Bike Lookup"] = {
         "main": [[{"node": "Roof Assets Config", "type": "main", "index": 0}]],
     }
     if "connections: fitment chain" not in changed:
@@ -214,6 +413,7 @@ COMMIT;
 
 def main() -> None:
     deploy_workflow(TOOL_WF)
+    deploy_workflow(WT_WF)
     deploy_workflow(AGENT_WF)
     print("Done.")
 

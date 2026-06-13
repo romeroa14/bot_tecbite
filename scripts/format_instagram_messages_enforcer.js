@@ -127,20 +127,161 @@ const inferCategory = (text) => {
   if (/\bbarras?\b/.test(f) || /roof\s*rack/.test(f) || /portaequipaje/.test(f)) return 'Barras techo';
   if (/\bcanasta\b/.test(f) || /\bbaul\b/.test(f) || /\bbaúl\b/.test(f)) return 'Canasta/Baúl';
   if (/\bportabici\b/.test(f) || /\bbici\b/.test(f)) return 'Portabici';
-  if (/\balfombra\b/.test(f) || /weathertech/.test(f) || /floorliner/.test(f)) return 'Alfombras WT';
+  if (/\balfombra\b/.test(f) || /weathertech/.test(f) || /floorliner/.test(f) || /cargo\s*liner/.test(f)) return 'Alfombras WT';
   return null;
 };
+
+const normalizeComparable = (value) => fold(value).replace(/[^a-z0-9]/g, '');
+
+const yearMatchesTitle = (title, year) => {
+  const y = Number(year);
+  if (!Number.isFinite(y)) return true;
+  const t = String(title || '');
+  if (new RegExp(`\\b${y}\\b`).test(t)) return true;
+  for (const token of t.match(/\b((19|20)\d{2})\+(?!\d)/g) || []) {
+    const start = Number(token.slice(0, 4));
+    if (y >= start) return true;
+  }
+  for (const range of t.match(/\b(19|20)\d{2}\s*-\s*((19|20)\d{2}|\+)\b/g) || []) {
+    const m = range.match(/(\d{4})\s*-\s*(\+|(\d{4}))/);
+    if (!m) continue;
+    const start = Number(m[1]);
+    const end = m[2] === '+' ? 9999 : Number(m[2]);
+    if (y >= start && y <= end) return true;
+  }
+  return false;
+};
+
+const filterWtForVehicle = (results, vehicle, wtType) => {
+  const makeCmp = normalizeComparable(vehicle?.make);
+  const modelCmp = normalizeComparable(vehicle?.model);
+  const year = Number(vehicle?.year);
+  const dedup = new Set();
+  const out = [];
+  for (const row of results || []) {
+    const title = String(row?.title || '');
+    const folded = fold(title);
+    const titleCmp = normalizeComparable(title);
+    if (makeCmp && !titleCmp.includes(makeCmp)) continue;
+    if (modelCmp && !titleCmp.includes(modelCmp)) continue;
+    if (!yearMatchesTitle(title, year)) continue;
+    if (wtType === 'row' && /\buniversal\b/i.test(folded)) continue;
+    if (wtType === 'univ' && !/\buniversal\b/i.test(folded)) continue;
+    const sku = String(row?.sku || row?.product_sku || '').trim().toUpperCase();
+    if (sku && dedup.has(sku)) continue;
+    if (sku) dedup.add(sku);
+    out.push(row);
+  }
+  out.sort((a, b) => {
+    const rank = (s) => (s === 'in_stock' ? 0 : s === 'out_of_stock' ? 1 : 2);
+    return rank(a?.stock) - rank(b?.stock);
+  });
+  return out.slice(0, 3);
+};
+
+const loadWtProducts = () => {
+  let attempted = false;
+  let wtType = 'row';
+  try {
+    const prep = $('Prepare Fitment Query').first().json;
+    attempted = !!prep.wt_lookup_attempted;
+    wtType = prep.wt_query?.wt_type || 'row';
+  } catch (_) {}
+  if (!attempted) return [];
+  try {
+    const raw = $('WT Product Lookup').first().json;
+    const results = Array.isArray(raw?.results) ? raw.results : [];
+    const vehicle = currentVehicle || {
+      make: leadState.make,
+      model: leadState.model,
+      year: Number(leadState.year),
+    };
+    return filterWtForVehicle(results, vehicle, wtType);
+  } catch (_) {}
+  return [];
+};
+
+const parseFlowTag = (tag) => {
+  const s = String(tag || '');
+  if (!s.startsWith('flow:')) return {};
+  const out = {};
+  for (const part of s.slice(5).split(',')) {
+    const [k, v] = part.split('=');
+    if (k && v) out[k.trim()] = v.trim();
+  }
+  return out;
+};
+
+const inferCargoType = (text, flowState = {}) => {
+  const upper = String(text || '').toUpperCase();
+  if (upper.includes('QR:CARGO_CANASTA')) return 'canasta';
+  if (upper.includes('QR:CARGO_BAUL')) return 'baul';
+  const f = fold(text);
+  if (/\bcanasta\b/.test(f) && !/\bbaul\b/.test(f)) return 'canasta';
+  if (/\bbaul\b/.test(f) || /\bbaúl\b/.test(f)) return 'baul';
+  return flowState.cargo || '';
+};
+
+const inferBikeMount = (text, flowState = {}) => {
+  const upper = String(text || '').toUpperCase();
+  if (upper.includes('QR:BIKE_M_ROOF')) return 'techo';
+  if (upper.includes('QR:BIKE_M_TRUNK')) return 'joroba';
+  if (upper.includes('QR:BIKE_M_PICKUP')) return 'pickup';
+  if (upper.includes('QR:BIKE_M_BALL')) return 'bola';
+  if (upper.includes('QR:BIKE_M_HITCH')) return 'hitch';
+  if (upper.includes('QR:BIKE_M_ACC')) return 'acc';
+  return flowState.mount || '';
+};
+
+const inferBikeType = (text, flowState = {}) => {
+  const upper = String(text || '').toUpperCase();
+  if (upper.includes('QR:BIKE_T_ELEC')) return 'electric';
+  if (upper.includes('QR:BIKE_T_MTB')) return 'mtb';
+  if (upper.includes('QR:BIKE_T_ROAD')) return 'ruta';
+  return flowState.type || '';
+};
+
+const loadCatalogProducts = (nodeName, attemptedField) => {
+  let attempted = false;
+  try {
+    attempted = !!$('Prepare Fitment Query').first().json[attemptedField];
+  } catch (_) {}
+  if (!attempted) return [];
+  const unwrap = (raw) => {
+    if (!raw) return null;
+    if (Array.isArray(raw)) raw = raw[0];
+    if (raw?.json && typeof raw.json === 'object' && !Array.isArray(raw.json)) raw = raw.json;
+    return raw;
+  };
+  try {
+    const raw = unwrap($(nodeName).first().json);
+    if (!raw || raw.found === false || !Array.isArray(raw.results)) return [];
+    return raw.results.filter((r) => r?.image_url || r?.title);
+  } catch (_) {}
+  return [];
+};
+
+const flowState = parseFlowTag(leadState.product_tag);
+const cargoType = inferCargoType(inboundText, flowState);
+const bikeMount = inferBikeMount(inboundText, flowState);
+const bikeType = inferBikeType(inboundText, flowState);
+const bikeBars = (() => {
+  if (/^QR:BIKE_BARS_YES$/i.test(inboundText)) return 'yes';
+  if (/^QR:BIKE_BARS_NO$/i.test(inboundText)) return 'no';
+  return flowState.bars || '';
+})();
 
 const inboundVehicle = extractVehicle(inboundText);
 const leadCategory = String(leadState.category || '').trim();
 const leadStage = String(leadState.stage || '').trim() || 'greeting';
 const currentCategory = inferCategory(inboundText) || leadCategory || '';
+const wtSelectionInput = /^QR:WT_(ROW|UNIV)$/i.test(inboundText);
 const currentVehicle = inboundVehicle || (
   leadState.make && leadState.model && leadState.year
     ? { make: leadState.make, model: leadState.model, year: Number(leadState.year) }
     : null
 );
-const needsRoofSelection = ['Barras techo', 'Canasta/Baúl'].includes(currentCategory);
+const needsRoofSelection = currentCategory === 'Barras techo';
 const genericEntry = /^(hola|buenas|buenos dias|buenos días|buen dia|buen día|info|informacion|información|menu|menú)$/i.test(inboundFold);
 
 let roofMenu = explicitRoof || (!explicitWt && !explicitMain && roofProductCtx && roofCue && !askingVehicle);
@@ -160,6 +301,7 @@ if (!mainMenu && !roofMenu && !wtMenu && !currentCategory && (leadStage === 'gre
 if (roofMenu && wtMenu) wtMenu = false;
 if (roofMenu && mainMenu) mainMenu = false;
 if (wtMenu && mainMenu) mainMenu = false;
+if (wtSelectionInput && currentCategory === 'Alfombras WT') wtMenu = false;
 
 const parseFitment = () => {
   let last = null;
@@ -220,9 +362,9 @@ try { leadRoof = String($('Get Lead State').item.json.roof_type || '').trim(); }
 
 const roofSelectionInput = /^QR:ROOF_[A-E]$/i.test(inboundText.trim())
   || (/^QR:ROOF_[A-E]$/i.test(String(agentOutput.input || '').trim()));
-const roofRecommendTurn = roofSelectionInput || (
-  fitment?.found === true && kit && /^ROOF_[A-E]$/i.test(leadRoof)
-);
+const roofRecommendTurn = needsRoofSelection && (roofSelectionInput || (
+  fitment?.found === true && kit && /^ROOF_[A-E]$/i.test(leadRoof) && !wtSelectionInput
+));
 let fitmentLookupAttempted = false;
 try { fitmentLookupAttempted = !!$('Prepare Fitment Query').first().json.fitment_lookup_attempted; } catch (_) {}
 const noRoofMatchTurn = roofSelectionInput && fitmentLookupAttempted && fitment?.found === false && needsRoofSelection && !!currentVehicle;
@@ -272,10 +414,58 @@ if (noRoofMatchTurn) {
   mainMenu = false;
 }
 
-if (roofMenu) pushUrl(ROOF_IMAGES.MENU);
-if (agentOutput.commercial_image && fitment?.found) {
+let cargoLookupAttempted = false;
+let bikeLookupAttempted = false;
+try { cargoLookupAttempted = !!$('Prepare Fitment Query').first().json.cargo_lookup_attempted; } catch (_) {}
+try { bikeLookupAttempted = !!$('Prepare Fitment Query').first().json.bike_lookup_attempted; } catch (_) {}
+
+const wtProducts = currentCategory === 'Alfombras WT' ? loadWtProducts() : [];
+const wtRecommendTurn = currentCategory === 'Alfombras WT' && wtProducts.length > 0 && (wtSelectionInput || detailRequest);
+const cargoProducts = currentCategory === 'Canasta/Baúl' ? loadCatalogProducts('Thule Cargo Lookup', 'cargo_lookup_attempted') : [];
+const bikeProducts = currentCategory === 'Portabici' ? loadCatalogProducts('Thule Bike Lookup', 'bike_lookup_attempted') : [];
+
+let cargoMenu = false;
+let bikeMountMenu = false;
+let bikeTypeMenu = false;
+let bikeBarsMenu = false;
+if (currentCategory === 'Canasta/Baúl' && currentVehicle && !cargoType) {
+  cargoMenu = true;
+  roofMenu = false;
+  mainMenu = false;
+  wtMenu = false;
+}
+if (currentCategory === 'Portabici' && currentVehicle && !bikeMount) {
+  bikeMountMenu = true;
+  roofMenu = false;
+  mainMenu = false;
+  wtMenu = false;
+  cargoMenu = false;
+}
+if (currentCategory === 'Portabici' && currentVehicle && bikeMount && !bikeType) {
+  bikeTypeMenu = true;
+  bikeMountMenu = false;
+  roofMenu = false;
+}
+if (currentCategory === 'Portabici' && bikeMount === 'techo' && bikeType && !bikeBars) {
+  bikeBarsMenu = true;
+  bikeTypeMenu = false;
+  roofMenu = false;
+}
+if (currentCategory !== 'Barras techo') {
+  roofMenu = false;
+}
+
+const cargoRecommendTurn = currentCategory === 'Canasta/Baúl' && !!cargoType && !!currentVehicle && !cargoMenu;
+const bikeRecommendTurn = currentCategory === 'Portabici' && !!bikeMount && !!bikeType
+  && (bikeMount !== 'techo' || bikeBars === 'yes')
+  && !bikeMountMenu && !bikeTypeMenu && !bikeBarsMenu;
+
+let bikeBarsRedirectMenu = false;
+
+if (roofMenu && needsRoofSelection) pushUrl(ROOF_IMAGES.MENU);
+if (agentOutput.commercial_image && fitment?.found && needsRoofSelection) {
   pushUrl(agentOutput.commercial_image);
-} else if (selectedRoof && ROOF_IMAGES[selectedRoof] && fitment?.found) {
+} else if (selectedRoof && ROOF_IMAGES[selectedRoof] && fitment?.found && needsRoofSelection) {
   pushUrl(ROOF_IMAGES[selectedRoof]);
 }
 
@@ -288,13 +478,72 @@ let cleanText = outputText
   .replace(/\n{3,}/g, '\n\n')
   .trim();
 
-// Prefer enforcer output from Roof Assets Config
-if (agentOutput.enforcer_applied && agentOutput.formatted_message) {
+// Prefer enforcer output from Roof Assets Config (barras only)
+if (agentOutput.enforcer_applied && agentOutput.formatted_message && !cargoRecommendTurn && !bikeRecommendTurn) {
   cleanText = String(agentOutput.formatted_message);
 }
 
-// --- Product accuracy enforcer (barras) ---
-if (noRoofMatchTurn) {
+// --- Product accuracy enforcer ---
+if (cargoRecommendTurn) {
+  const label = cargoType === 'canasta' ? 'canastas de techo Thule' : 'baúles de techo Thule';
+  const make = currentVehicle?.make || leadState.make || '';
+  const model = currentVehicle?.model || leadState.model || '';
+  const yr = currentVehicle?.year || leadState.year || '';
+  if (cargoProducts.length > 0) {
+    const lines = [`Estas son nuestras opciones de ${label}:`];
+    const emoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
+    imageUrls.length = 0;
+    seen.clear();
+    cargoProducts.forEach((p, i) => {
+      lines.push(`${emoji[i] || '🔹'} ${p.title} — ${formatPrice(p.price)} (${stockLabel(p.stock)})`);
+      if (p.image_url) pushUrl(p.image_url);
+    });
+    cleanText = lines.join('\n') + '\n\n¿Cuál te interesa cotizar? Un asesor puede confirmar compatibilidad con tu vehículo.';
+  } else {
+    imageUrls.length = 0;
+    seen.clear();
+    cleanText = `Para tu ${make} ${model} ${yr}, no encontramos ${label} en inventario en este momento. Un asesor puede confirmar disponibilidad y compatibilidad.`;
+  }
+} else if (bikeRecommendTurn) {
+  const mountLabels = { techo: 'techo', joroba: 'maletero', pickup: 'pick-up', bola: 'bola', hitch: 'remolque', acc: 'accesorios' };
+  const make = currentVehicle?.make || leadState.make || '';
+  const model = currentVehicle?.model || leadState.model || '';
+  const yr = currentVehicle?.year || leadState.year || '';
+  if (bikeProducts.length > 0) {
+    const lines = [`Portabicicletas Thule (${mountLabels[bikeMount] || bikeMount}):`];
+    const emoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
+    imageUrls.length = 0;
+    seen.clear();
+    bikeProducts.forEach((p, i) => {
+      lines.push(`${emoji[i] || '🔹'} ${p.title} — ${formatPrice(p.price)} (${stockLabel(p.stock)})`);
+      if (p.image_url) pushUrl(p.image_url);
+    });
+    cleanText = lines.join('\n') + '\n\nUn asesor verificará compatibilidad con tu vehículo y te enviará la cotización.';
+  } else {
+    imageUrls.length = 0;
+    seen.clear();
+    cleanText = `Para tu ${make} ${model} ${yr}, no encontramos portabicicletas Thule (${mountLabels[bikeMount] || bikeMount}) en inventario ahora. Un asesor puede ayudarte con opciones compatibles.`;
+  }
+} else if (/^QR:BIKE_BARS_NO$/i.test(inboundText) && bikeMount === 'techo') {
+  cleanText = 'Para un portabicicleta de techo primero necesitas barras. ¿Quieres cotizar barras de techo para tu vehículo?';
+  bikeBarsRedirectMenu = true;
+  roofMenu = false;
+  mainMenu = false;
+  bikeBarsMenu = false;
+} else if (wtRecommendTurn) {
+  const make = currentVehicle?.make || leadState.make || '';
+  const model = currentVehicle?.model || leadState.model || '';
+  const yr = currentVehicle?.year || leadState.year || '';
+  const lines = [`Para tu ${make} ${model} ${yr}, estas son opciones WeatherTech compatibles:`];
+  const emoji = ['1️⃣', '2️⃣', '3️⃣'];
+  imageUrls.length = 0;
+  seen.clear();
+  wtProducts.forEach((p, i) => {
+    lines.push(`${emoji[i] || '🔹'} *${p.title}* — ${formatPrice(p.price)} (${stockLabel(p.stock)})`);
+    if (p.image_url) pushUrl(p.image_url);
+  });
+  cleanText = lines.join('\n') + '\n\n¿Cuál te interesa cotizar o quieres que te conecte con un asesor?';
+} else if (noRoofMatchTurn) {
   const make = currentVehicle?.make || leadState.make || '';
   const model = currentVehicle?.model || leadState.model || '';
   const yr = currentVehicle?.year || leadState.year || '';
@@ -338,9 +587,9 @@ if (noRoofMatchTurn) {
   cleanText = cleanText.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-const enforcerControlledImages = !!(fitment?.found && kit && (
+const enforcerControlledImages = !!(wtRecommendTurn || cargoRecommendTurn || bikeRecommendTurn || (needsRoofSelection && fitment?.found && kit && (
   (roofRecommendTurn && !detailRequest) || detailRequest
-));
+)));
 
 // Collect tool images only when enforcer did not already curate images
 if (!enforcerControlledImages) {
@@ -369,7 +618,12 @@ const countProducts = (t) => {
 const productOpts = countProducts(cleanText);
 
 let qrConfig = null;
-if (roofMenu) {
+if (bikeBarsRedirectMenu) {
+  qrConfig = {
+    options: ['Sí, cotizar barras', 'WhatsApp'],
+    payloads: ['CAT_BARS', 'WHATSAPP'],
+  };
+} else if (roofMenu) {
   qrConfig = {
     options: ['A Riel elev.', 'B Riel alin.', 'C Punto fij.', 'D Techo liso', 'E Canal agua'],
     payloads: ['ROOF_A', 'ROOF_B', 'ROOF_C', 'ROOF_D', 'ROOF_E'],
@@ -387,6 +641,30 @@ if (roofMenu) {
     payloads: ['WT_ROW', 'WT_UNIV', 'WHATSAPP'],
   };
   if (!cleanText || cleanText.length < 10) cleanText = '¿Qué tipo de alfombra buscas?';
+} else if (cargoMenu) {
+  qrConfig = {
+    options: ['Canasta', 'Baúl', 'WhatsApp'],
+    payloads: ['CARGO_CANASTA', 'CARGO_BAUL', 'WHATSAPP'],
+  };
+  cleanText = 'Perfecto 🙌 ¿Buscas canasta de techo o baúl?';
+} else if (bikeMountMenu) {
+  qrConfig = {
+    options: ['Techo', 'Joroba', 'Pick-up', 'Bola', 'Remolque', 'WhatsApp'],
+    payloads: ['BIKE_M_ROOF', 'BIKE_M_TRUNK', 'BIKE_M_PICKUP', 'BIKE_M_BALL', 'BIKE_M_HITCH', 'WHATSAPP'],
+  };
+  cleanText = '¿Qué tipo de portabicicleta buscas?';
+} else if (bikeTypeMenu) {
+  qrConfig = {
+    options: ['Ruta', 'MTB', 'Eléctrica', 'WhatsApp'],
+    payloads: ['BIKE_T_ROAD', 'BIKE_T_MTB', 'BIKE_T_ELEC', 'WHATSAPP'],
+  };
+  cleanText = '¿Qué tipo de bicicleta utilizas?';
+} else if (bikeBarsMenu) {
+  qrConfig = {
+    options: ['Sí, tengo barras', 'No, cotizar barras', 'WhatsApp'],
+    payloads: ['BIKE_BARS_YES', 'BIKE_BARS_NO', 'WHATSAPP'],
+  };
+  cleanText = 'Para portabicicleta de techo necesitas barras instaladas. ¿Tu auto cuenta con barras?';
 } else if (productOpts >= 2 && !fitment?.found) {
   const opts = [];
   const pays = [];
